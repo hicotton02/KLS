@@ -1,0 +1,262 @@
+{% extends "base.html" %}
+
+{% block content %}
+<a class="back-link" href="{{ back_href }}">Back to {{ jurisdiction.name }}</a>
+
+<section class="hero-card">
+  <div>
+    <p class="eyebrow">{{ bill.bill_num }} • {{ bill.year }}</p>
+    <h1>{{ bill.catch_title }}</h1>
+    <p class="hero-copy">{{ bill.bill_title }}</p>
+    {% if bill_tags %}
+    <div class="tag-row">
+      {% for item in bill_tags %}
+      <span class="topic-chip">{{ item.label }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  <div class="detail-status-card">
+    <span class="status-pill status-{{ bill.outcome }}">{{ bill.status_label }}</span>
+    <p>{{ bill.status_explainer }}</p>
+    <dl class="mini-meta">
+      <div>
+        <dt>Sponsor</dt>
+        <dd>{{ bill.sponsor }}</dd>
+      </div>
+      <div>
+        <dt>Last action</dt>
+        <dd>{{ bill.last_action_date|format_date }}</dd>
+      </div>
+      <div>
+        <dt>Official status</dt>
+        <dd>{{ bill.bill_status }}</dd>
+      </div>
+      <div>
+        <dt>Effective date</dt>
+        <dd>{{ bill.effective_date|format_date or "Not listed" }}</dd>
+      </div>
+    </dl>
+  </div>
+</section>
+
+<section class="detail-grid">
+  <article class="panel">
+    <h2>Plain English Breakdown</h2>
+    {% if interpretation %}
+      {% if interpretation.fact_check_notes %}
+      <p class="cell-note">{{ interpretation.fact_check_notes[0] }}</p>
+      {% endif %}
+      {% if interpretation.plain_language_title %}
+      <h3>{{ interpretation.plain_language_title }}</h3>
+      {% endif %}
+      {% if interpretation.one_sentence_summary %}
+      <p class="summary-callout">{{ interpretation.one_sentence_summary }}</p>
+      {% endif %}
+
+      {% if interpretation.what_it_does %}
+      <h3>What This Bill Does</h3>
+      <ul class="simple-list">
+        {% for item in interpretation.what_it_does %}
+        <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+
+      {% if interpretation.who_it_affects %}
+      <h3>Who It Names or Affects</h3>
+      <ul class="simple-list">
+        {% for item in interpretation.who_it_affects %}
+        <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+
+      {% if interpretation.terms_to_know %}
+      <h3>Terms To Know</h3>
+      <dl class="term-list">
+        {% for item in interpretation.terms_to_know %}
+        <div>
+          <dt>{{ item.term }}</dt>
+          <dd>{{ item.meaning }}</dd>
+        </div>
+        {% endfor %}
+      </dl>
+      {% endif %}
+
+      {% if interpretation.limits_and_unknowns %}
+      <h3>Limits and Unknowns</h3>
+      <ul class="simple-list">
+        {% for item in interpretation.limits_and_unknowns %}
+        <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    {% else %}
+      <p>The plain English breakdown is still being put together. The official documents below are already here.</p>
+    {% endif %}
+  </article>
+
+  <aside class="panel">
+    <h2>Official Links</h2>
+    <ul class="link-list">
+      <li><a href="{{ official_links.official_page }}" target="_blank" rel="noopener">{{ jurisdiction.source_name }} bill page</a></li>
+      {% if official_links.current_version %}<li><a href="{{ official_links.current_version }}" target="_blank" rel="noopener">Current bill version</a></li>{% endif %}
+      {% if official_links.introduced %}<li><a href="{{ official_links.introduced }}" target="_blank" rel="noopener">Introduced version</a></li>{% endif %}
+      {% if official_links.digest %}<li><a href="{{ official_links.digest }}" target="_blank" rel="noopener">Official digest</a></li>{% endif %}
+      {% if official_links.summary %}<li><a href="{{ official_links.summary }}" target="_blank" rel="noopener">Official summary</a></li>{% endif %}
+    </ul>
+
+    <h2>Official Metadata</h2>
+    <dl class="meta-list">
+      <div><dt>Bill number</dt><dd>{{ bill.bill_num }}</dd></div>
+      <div><dt>Bill type</dt><dd>{{ bill.bill_type }}</dd></div>
+      <div><dt>{% if jurisdiction.kind == "federal" %}Law number{% else %}Chapter{% endif %}</dt><dd>{{ bill.chapter_no or "Not assigned" }}</dd></div>
+      <div><dt>{% if jurisdiction.kind == "federal" %}Current text version{% else %}Enrolled number{% endif %}</dt><dd>{{ bill.enrolled_no or "Not assigned" }}</dd></div>
+      <div><dt>Signed date</dt><dd>{{ bill.signed_date|format_date or "Not listed" }}</dd></div>
+      <div><dt>Synced</dt><dd>{{ bill.source_synced_at|format_date }}</dd></div>
+    </dl>
+  </aside>
+</section>
+
+{% if amendments %}
+<section class="panel">
+  <h2>Amendments</h2>
+  <p class="cell-note">These notes stay tied to the official amendment files and metadata from the legislature.</p>
+  <div class="relationship-list">
+    {% for amendment in amendments %}
+    <article class="relationship-card amendment-card">
+      <div class="relationship-card-head">
+        <div>
+          <strong><a href="{{ amendment.document_url }}" target="_blank" rel="noopener">{{ amendment.amendment_number }}</a></strong>
+          <p class="relationship-summary">
+            {{ amendment.reading_order }}{% if amendment.sponsor %} • {{ amendment.sponsor }}{% endif %}
+          </p>
+        </div>
+        <div class="relationship-badges">
+          <span class="coverage-chip coverage-medium">{{ amendment.status or "Filed" }}</span>
+        </div>
+      </div>
+      {% if amendment.interpretation_json and amendment.interpretation_json.one_sentence_summary %}
+      <p><strong>Plain English:</strong> {{ amendment.interpretation_json.one_sentence_summary }}</p>
+      {% endif %}
+      {% if amendment.interpretation_json and amendment.interpretation_json.changes %}
+      <ul class="simple-list compact-list">
+        {% for item in amendment.interpretation_json.changes %}
+        <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {% if amendment.interpretation_json and amendment.interpretation_json.limits_and_unknowns %}
+      <ul class="simple-list compact-list">
+        {% for item in amendment.interpretation_json.limits_and_unknowns %}
+        <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if related_relationships %}
+<section class="panel">
+  <h2>Bills Worth Reading With This One</h2>
+  <p class="cell-note">
+    These pairings are meant to flag bills from the same session that may have a bigger real-world effect when you read them together.
+  </p>
+  <div class="relationship-list">
+    {% for relationship in related_relationships %}
+    <article class="relationship-card">
+      <div class="relationship-card-head">
+        <div>
+          <strong><a href="{{ relationship.peer_href }}">{{ relationship.peer.bill_num }}</a></strong>
+          {% if relationship.pair_summaries|length == 1 %}
+          <p class="relationship-summary">{{ relationship.pair_summaries[0] }}</p>
+          {% elif relationship.pair_summaries %}
+          <ul class="simple-list compact-list relationship-summary-list">
+            {% for item in relationship.pair_summaries %}
+            <li>{{ item }}</li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+        </div>
+        <div class="relationship-badges">
+          <span class="coverage-chip coverage-{{ relationship.relationship_strength }}">{{ relationship.relationship_strength|title }} confidence</span>
+          {% if relationship.needs_human_review %}
+          <span class="coverage-chip coverage-review">Needs review</span>
+          {% endif %}
+        </div>
+      </div>
+      {% if relationship.combined_effects|length == 1 %}
+      <p><strong>Possible combined effect:</strong> {{ relationship.combined_effects[0] }}</p>
+      {% elif relationship.combined_effects %}
+      <div>
+        <strong>Possible combined effects:</strong>
+        <ul class="simple-list compact-list">
+          {% for item in relationship.combined_effects %}
+          <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+      {% if relationship.why_reviews %}
+      <div>
+        <strong>Why this got flagged:</strong>
+        <ul class="simple-list compact-list">
+          {% for item in relationship.why_reviews %}
+          <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+      {% if relationship.evidence_items %}
+      <ul class="simple-list compact-list">
+        {% for item in relationship.evidence_items %}
+        <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="panel">
+  <h2>Bill History</h2>
+  {% if actions %}
+  <ol class="timeline">
+    {% for action in actions %}
+    <li>
+      <strong>{{ action.statusDate[:10] if action.statusDate else "" }}</strong>
+      <span>{{ action.location or jurisdiction.source_name }}</span>
+      <p>{{ action.statusMessage }}</p>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p>No action history is stored for this bill yet.</p>
+  {% endif %}
+</section>
+
+<section class="detail-grid">
+  {% if bill.official_summary_text %}
+  <article class="panel">
+    <h2>Official Summary Text</h2>
+    <pre class="document-text">{{ bill.official_summary_text }}</pre>
+  </article>
+  {% endif %}
+
+  {% if bill.current_bill_text %}
+  <article class="panel">
+    <h2>Current Bill Text</h2>
+    <details open>
+      <summary>Read the full stored bill text</summary>
+      <pre class="document-text">{{ bill.current_bill_text }}</pre>
+    </details>
+  </article>
+  {% endif %}
+</section>
+{% endblock %}

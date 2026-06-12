@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+
+{% block content %}
+<a class="back-link" href="/">Back to home</a>
+
+<section class="hero-card">
+  <div>
+    <p class="eyebrow">Site Search</p>
+    <h1>Search bills, tags, and sponsors.</h1>
+    <p class="hero-copy">
+      Look up stored bill text, plain English summaries, tags, and sponsor names across the site.
+    </p>
+  </div>
+  <div class="detail-status-card">
+    <p class="cell-note">Search works across bill numbers, titles, plain English notes, amendment notes, tags, and sponsor names.</p>
+  </div>
+</section>
+
+<section class="panel">
+  <form method="get" class="filters filters-search">
+    <label>
+      <span>Search</span>
+      <input type="search" name="q" value="{{ query }}" placeholder="HB0126, Neiman, firearms, budget">
+    </label>
+
+    <label>
+      <span>Area</span>
+      <select name="area">
+        {% for area_option in search_areas %}
+        <option value="{{ area_option.value }}" {% if area == area_option.value %}selected{% endif %}>{{ area_option.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>
+      <span>Year or Congress</span>
+      <input type="number" name="year" value="{{ year or '' }}" min="2020" step="1" placeholder="Optional">
+    </label>
+
+    <label>
+      <span>Status</span>
+      <select name="status">
+        <option value="all" {% if status == "all" %}selected{% endif %}>All bills</option>
+        <option value="active" {% if status == "active" %}selected{% endif %}>Active</option>
+        <option value="passed" {% if status == "passed" %}selected{% endif %}>Passed</option>
+        <option value="failed" {% if status == "failed" %}selected{% endif %}>Did not pass</option>
+      </select>
+    </label>
+
+    <label>
+      <span>Tag</span>
+      <select name="tag">
+        <option value="" {% if not tag %}selected{% endif %}>All tags</option>
+        {% for tag_option in available_tags %}
+        <option value="{{ tag_option }}" {% if tag_option == tag %}selected{% endif %}>{{ tag_option|replace("-", " ")|title }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <button type="submit">Search</button>
+  </form>
+</section>
+
+<section class="panel">
+  {% if results %}
+  <div class="search-results">
+    {% for bill in results %}
+    <article class="relationship-card search-card">
+      <div class="search-card-head">
+        <div>
+          <p class="eyebrow">{{ bill.jurisdiction_name }} • {{ bill.year }}</p>
+          <h2><a href="{{ bill.href }}">{{ bill.bill_num }} {{ bill.catch_title }}</a></h2>
+          <p class="relationship-summary">{{ bill.sponsor }}</p>
+        </div>
+        <div class="relationship-badges">
+          <span class="status-pill status-{{ bill.outcome }}">{{ bill.status_label }}</span>
+        </div>
+      </div>
+      {% if bill.interpretation_json and bill.interpretation_json.one_sentence_summary %}
+      <p>{{ bill.interpretation_json.one_sentence_summary }}</p>
+      {% endif %}
+      {% if bill.tag_labels %}
+      <div class="tag-row">
+        {% for item in bill.tag_labels %}
+        <span class="topic-chip">{{ item }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <h2>No bills matched.</h2>
+    <p>Try a bill number, a sponsor name, a tag like firearms or abortion, or a few words from the bill text.</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

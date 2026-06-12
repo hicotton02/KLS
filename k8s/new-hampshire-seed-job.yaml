@@ -1,0 +1,133 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keeping-law-simple-sync-new-hampshire-count
+  namespace: keeping-law-simple
+spec:
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: init-data-permissions
+          image: busybox:1.36
+          command:
+            - sh
+            - -lc
+            - mkdir -p /data/geoip && chown -R 10001:10001 /data && chmod -R ug+rwX /data
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+      restartPolicy: Never
+      containers:
+        - name: new-hampshire-count
+          image: registry.skazproconsulting.com/keeping-law-simple/web:20260422o
+          imagePullPolicy: IfNotPresent
+          command:
+            [
+              "python",
+              "-m",
+              "app.cli",
+              "sync",
+              "--new-hampshire-years",
+              "2026",
+              "--skip-interpretation",
+              "--skip-relationships",
+              "--skip-alaska",
+              "--skip-kansas",
+              "--skip-kentucky",
+              "--skip-louisiana",
+              "--skip-maine",
+              "--skip-alabama",
+              "--skip-arizona",
+              "--skip-arkansas",
+              "--skip-california",
+              "--skip-colorado",
+              "--skip-connecticut",
+              "--skip-delaware",
+              "--skip-florida",
+              "--skip-georgia",
+              "--skip-idaho",
+              "--skip-illinois",
+              "--skip-iowa",
+              "--skip-maryland",
+              "--skip-massachusetts",
+              "--skip-michigan",
+              "--skip-minnesota",
+              "--skip-mississippi",
+              "--skip-missouri",
+              "--skip-montana",
+              "--skip-nebraska",
+              "--skip-nevada",
+              "--skip-new-jersey",
+              "--skip-new-mexico",
+              "--skip-north-carolina",
+              "--skip-north-dakota",
+              "--skip-ohio",
+              "--skip-oklahoma",
+              "--skip-oregon",
+              "--skip-pennsylvania",
+              "--skip-rhode-island",
+              "--skip-south-carolina",
+              "--skip-south-dakota",
+              "--skip-tennessee",
+              "--skip-texas",
+              "--skip-utah",
+              "--skip-vermont",
+              "--skip-virginia",
+              "--skip-washington",
+              "--skip-west-virginia",
+              "--skip-wisconsin",
+              "--skip-wyoming",
+              "--skip-federal"
+            ]
+          env:
+            - name: KLS_SYNC_PARALLELISM
+              value: "8"
+          envFrom:
+            - configMapRef:
+                name: keeping-law-simple-config
+            - secretRef:
+                name: keeping-law-simple-secrets
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: keeping-law-simple-data
+        - name: tmp
+          emptyDir: {}
+      nodeSelector:
+        kubernetes.io/hostname: cp
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule

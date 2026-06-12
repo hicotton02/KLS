@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: keeping-law-simple-postgres
+  namespace: keeping-law-simple
+  labels:
+    app: keeping-law-simple-postgres
+    app.kubernetes.io/name: keeping-law-simple
+spec:
+  selector:
+    app: keeping-law-simple-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

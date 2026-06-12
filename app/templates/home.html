@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero-card">
+  <div>
+    <p class="eyebrow">Coverage Map</p>
+    <h1>Bills broken down in plain English.</h1>
+    <p class="hero-copy">
+      Pick a state page or the federal page. We pull in the official bill text, track where things stand, and break it down in plain English without telling people what to think.
+    </p>
+    <p class="hero-copy">
+      Every place listed below has its own page, its own source links, and its own bill archive as records get loaded.
+    </p>
+    <a class="primary-link" href="/search">Search bills, tags, and sponsors</a>
+  </div>
+</section>
+
+<section class="jurisdiction-grid">
+  {% for card in jurisdiction_cards %}
+  <article class="panel jurisdiction-card">
+    <div class="jurisdiction-card-head">
+      <div>
+        <p class="eyebrow">{{ card.jurisdiction.kind }}</p>
+        <h2>{{ card.jurisdiction.name }}</h2>
+      </div>
+    </div>
+    <p>{{ card.jurisdiction.description }}</p>
+    <p class="card-meta">
+      Source:
+      {% if card.jurisdiction.source_url %}
+      <a href="{{ card.jurisdiction.source_url }}" target="_blank" rel="noopener">{{ card.jurisdiction.source_name }}</a>
+      {% else %}
+      {{ card.jurisdiction.source_name }}
+      {% endif %}
+    </p>
+
+    {% if card.latest_year %}
+    <dl class="jurisdiction-stats">
+      <div><dt>{% if card.jurisdiction.kind == "federal" %}Latest Congress{% else %}Latest year{% endif %}</dt><dd>{{ card.latest_year }}</dd></div>
+      <div><dt>Total bills</dt><dd>{{ card.counts.total }}</dd></div>
+      <div><dt>Passed</dt><dd>{{ card.counts.passed }}</dd></div>
+      <div><dt>Did not pass</dt><dd>{{ card.counts.failed }}</dd></div>
+    </dl>
+    {% else %}
+    <p class="card-meta">No bills are loaded on this page yet.</p>
+    {% endif %}
+
+    {% if card.sync_status %}
+    <p class="sync-note{% if card.sync_status.is_running %} sync-note-running{% endif %}">
+      <strong>{{ card.sync_status.headline }}</strong>
+      {% if card.sync_status.detail %}<span>{{ card.sync_status.detail }}</span>{% endif %}
+    </p>
+    {% endif %}
+
+    <a class="primary-link" href="{{ card.href }}">
+      {% if card.jurisdiction.kind == "state" %}
+      Open {{ card.jurisdiction.name }}
+      {% else %}
+      Open Federal
+      {% endif %}
+    </a>
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}

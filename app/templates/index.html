@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero-card">
+  <div>
+    <p class="eyebrow">Growing Coverage</p>
+    <h1>Legislation explained in plain English.</h1>
+    <p class="hero-copy">
+      Keeping Law Simple is built to cover state and federal legislation over time. The current public release starts with Wyoming and keeps the official bill title, current status, and source documents alongside a plain English breakdown meant to be easy to follow.
+    </p>
+    <p class="hero-copy">
+      Current live coverage: Wyoming.
+    </p>
+  </div>
+  <div class="stats-grid">
+    <article class="stat-card">
+      <span>Total Bills</span>
+      <strong>{{ counts.total }}</strong>
+    </article>
+    <article class="stat-card">
+      <span>Still Active</span>
+      <strong>{{ counts.active }}</strong>
+    </article>
+    <article class="stat-card">
+      <span>Passed</span>
+      <strong>{{ counts.passed }}</strong>
+    </article>
+    <article class="stat-card">
+      <span>Did Not Pass</span>
+      <strong>{{ counts.failed }}</strong>
+    </article>
+  </div>
+</section>
+
+<section class="panel">
+  <form method="get" class="filters">
+    <label>
+      <span>Year</span>
+      <select name="year">
+        {% for year_option in available_years %}
+        <option value="{{ year_option }}" {% if year_option == selected_year %}selected{% endif %}>{{ year_option }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>
+      <span>Search</span>
+      <input type="search" name="q" value="{{ query }}" placeholder="HB0002, permits, education, sponsor">
+    </label>
+
+    <label>
+      <span>Status</span>
+      <select name="status">
+        <option value="all" {% if status == "all" %}selected{% endif %}>All bills</option>
+        <option value="active" {% if status == "active" %}selected{% endif %}>Active</option>
+        <option value="passed" {% if status == "passed" %}selected{% endif %}>Passed</option>
+        <option value="failed" {% if status == "failed" %}selected{% endif %}>Did not pass</option>
+      </select>
+    </label>
+
+    <button type="submit">Update List</button>
+  </form>
+</section>
+
+<section class="panel">
+  {% if bills %}
+  <div class="table-wrap">
+    <table class="bill-table">
+      <thead>
+        <tr>
+          <th>Bill</th>
+          <th>Title</th>
+          <th>Status</th>
+          <th>Last Action</th>
+          <th>Updated</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for bill in bills %}
+        <tr>
+          <td>
+            <a class="bill-link" href="/bills/{{ bill.year }}/{{ bill.bill_num }}{% if bill.special_session_value is not none %}?special_session={{ bill.special_session_value }}{% endif %}">
+              {{ bill.bill_num }}
+            </a>
+          </td>
+          <td>
+            <div class="title-cell">
+              <strong>{{ bill.catch_title }}</strong>
+              <small>{{ bill.sponsor }}</small>
+            </div>
+          </td>
+          <td>
+            <span class="status-pill status-{{ bill.outcome }}">{{ bill.status_label }}</span>
+            <small class="cell-note">{{ bill.bill_status }}</small>
+          </td>
+          <td>{{ bill.last_action }}</td>
+          <td>{{ bill.last_action_date|format_date }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <h2>No bills are loaded yet.</h2>
+    <p>The sync job may still be running, or the selected filters returned no results for the current coverage area.</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

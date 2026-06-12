@@ -1,0 +1,92 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keeping-law-simple-sqlite-to-postgres-20260604d
+  namespace: keeping-law-simple
+  labels:
+    app.kubernetes.io/name: keeping-law-simple
+    app.kubernetes.io/component: database-migration
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 14400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keeping-law-simple
+        app.kubernetes.io/component: database-migration
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -lc
+            - |
+              until pg_isready -h keeping-law-simple-postgres -U kls -d kls; do
+                sleep 2
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      containers:
+        - name: migrate
+          image: registry.skazproconsulting.com/keeping-law-simple/web:20260604d
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - /app/scripts/migrate_kls_sqlite_to_postgres.py
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: PYTHONPATH
+              value: /app
+            - name: KLS_SQLITE_SOURCE_PATH
+              value: /source/keepinglawsimple.db
+            - name: KLS_MIGRATION_TRUNCATE
+              value: "true"
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keeping-law-simple-postgres-secrets
+                  key: KLS_POSTGRES_PASSWORD
+            - name: KLS_DATABASE_URL
+              value: postgresql://kls@keeping-law-simple-postgres.keeping-law-simple.svc.cluster.local:5432/kls
+          volumeMounts:
+            - name: source-data
+              mountPath: /source
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: source-data
+          persistentVolumeClaim:
+            claimName: keeping-law-simple-data
+        - name: tmp
+          emptyDir: {}
+      nodeSelector:
+        pool: cpu

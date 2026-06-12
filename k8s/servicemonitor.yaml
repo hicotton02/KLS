@@ -1,0 +1,20 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: keeping-law-simple-web
+  namespace: monitoring
+  labels:
+    release: monitoring
+    app.kubernetes.io/name: keeping-law-simple
+spec:
+  namespaceSelector:
+    matchNames:
+      - keeping-law-simple
+  selector:
+    matchLabels:
+      app: keeping-law-simple-web
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s

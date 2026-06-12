@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+
+{% block content %}
+<a class="back-link" href="/">Back to home</a>
+
+<section class="hero-card">
+  <div>
+    <p class="eyebrow">Admin Analytics</p>
+    <h1>Traffic and audience snapshot.</h1>
+    <p class="hero-copy">
+      This view is for admins only. It shows server-side traffic trends, country-level visitor counts, referrers, and the pages people open most often.
+    </p>
+    <p class="cell-note">We only keep country-level geolocation and an anonymous visitor hash. Full IP addresses are not stored in the analytics table.</p>
+  </div>
+  <div class="detail-status-card">
+    <p class="cell-note">Country results are estimate-level and based on IP geolocation.</p>
+    <p class="cell-note"><a href="https://db-ip.com" target="_blank" rel="noopener">IP Geolocation by DB-IP</a></p>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="stats-grid admin-stats-grid">
+    <article class="stat-card">
+      <span>Human Views • 24 hours</span>
+      <strong>{{ analytics.windows["24h"].human_views }}</strong>
+    </article>
+    <article class="stat-card">
+      <span>Human Visitors • 24 hours</span>
+      <strong>{{ analytics.windows["24h"].human_visitors }}</strong>
+    </article>
+    <article class="stat-card">
+      <span>Human Views • 7 days</span>
+      <strong>{{ analytics.windows["7d"].human_views }}</strong>
+    </article>
+    <article class="stat-card">
+      <span>Bot Views • 7 days</span>
+      <strong>{{ analytics.windows["7d"].bot_views }}</strong>
+    </article>
+    <article class="stat-card">
+      <span>Human Views • 30 days</span>
+      <strong>{{ analytics.windows["30d"].human_views }}</strong>
+    </article>
+    <article class="stat-card">
+      <span>Total Tracked • 30 days</span>
+      <strong>{{ analytics.windows["30d"].total_views }}</strong>
+    </article>
+  </div>
+</section>
+
+<section class="detail-grid admin-analytics-grid">
+  <article class="panel">
+    <h2>Top Countries</h2>
+    {% if analytics.top_countries %}
+    <div class="table-wrap">
+      <table class="bill-table compact-table">
+        <thead>
+          <tr>
+            <th>Country</th>
+            <th>Code</th>
+            <th>Views</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in analytics.top_countries %}
+          <tr>
+            <td>{{ row.country_name }}</td>
+            <td>{{ row.country_code }}</td>
+            <td>{{ row.hits }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="cell-note">No country data has been recorded yet.</p>
+    {% endif %}
+  </article>
+
+  <article class="panel">
+    <h2>Top Referrers</h2>
+    {% if analytics.top_referrers %}
+    <div class="table-wrap">
+      <table class="bill-table compact-table">
+        <thead>
+          <tr>
+            <th>Referrer</th>
+            <th>Views</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in analytics.top_referrers %}
+          <tr>
+            <td>{{ row.referrer_domain }}</td>
+            <td>{{ row.hits }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="cell-note">No outside referrers have been recorded yet.</p>
+    {% endif %}
+  </article>
+</section>
+
+<section class="detail-grid admin-analytics-grid">
+  <article class="panel">
+    <h2>Top Pages</h2>
+    {% if analytics.top_pages %}
+    <div class="table-wrap">
+      <table class="bill-table compact-table">
+        <thead>
+          <tr>
+            <th>Page</th>
+            <th>Views</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in analytics.top_pages %}
+          <tr>
+            <td><a href="{{ row.path }}">{{ row.path }}</a></td>
+            <td>{{ row.hits }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="cell-note">No tracked pages yet.</p>
+    {% endif %}
+  </article>
+
+  <article class="panel">
+    <h2>Recent Human Visits</h2>
+    {% if analytics.recent_visits %}
+    <div class="table-wrap">
+      <table class="bill-table compact-table">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Page</th>
+            <th>Country</th>
+            <th>Referrer</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in analytics.recent_visits %}
+          <tr>
+            <td>{{ row.occurred_at|format_datetime }}</td>
+            <td><a href="{{ row.path }}">{{ row.path }}</a></td>
+            <td>{{ row.country_name or "Unknown" }}</td>
+            <td>{{ row.referrer_domain or "Direct" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="cell-note">Recent visitor rows will show up here once traffic starts landing.</p>
+    {% endif %}
+  </article>
+</section>
+{% endblock %}

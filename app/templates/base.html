@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ seo.title if seo else app_title }}</title>
+  <meta name="description" content="{{ seo.description if seo else app_title }}">
+  <meta name="robots" content="{{ seo.robots if seo else 'index,follow,max-image-preview:large' }}">
+  {% if seo and seo.canonical_url %}
+  <link rel="canonical" href="{{ seo.canonical_url }}">
+  <meta property="og:url" content="{{ seo.canonical_url }}">
+  {% endif %}
+  <meta property="og:site_name" content="{{ app_title }}">
+  <meta property="og:type" content="{{ seo.og_type if seo else 'website' }}">
+  <meta property="og:title" content="{{ seo.title if seo else app_title }}">
+  <meta property="og:description" content="{{ seo.description if seo else app_title }}">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{{ seo.title if seo else app_title }}">
+  <meta name="twitter:description" content="{{ seo.description if seo else app_title }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@400;500;600&family=Source+Serif+4:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="icon" href="/static/favicon.svg?v={{ static_asset_version }}" type="image/svg+xml">
+  <link rel="shortcut icon" href="/static/favicon.svg?v={{ static_asset_version }}" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css?v={{ static_asset_version }}">
+  {% if google_analytics_id %}
+  <script async src="https://www.googletagmanager.com/gtag/js?id={{ google_analytics_id }}"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', '{{ google_analytics_id }}');
+  </script>
+  {% endif %}
+  {% if seo and seo.json_ld %}
+    {% for block in seo.json_ld %}
+  <script type="application/ld+json">{{ block|safe }}</script>
+    {% endfor %}
+  {% endif %}
+</head>
+<body class="environment-{{ environment_name|default('production') }}">
+  <header class="site-header">
+    <div class="page-shell">
+      <div class="header-row">
+        <a class="brand" href="/">
+          <span class="brand-mark">KLS</span>
+          <span>
+            <strong>Keeping Law Simple</strong>
+            <small>Legislation in plain English</small>
+          </span>
+        </a>
+        <nav class="header-nav" aria-label="Primary">
+          {% if show_environment_badge %}
+          <span class="environment-badge">{{ environment_badge_label }}</span>
+          {% endif %}
+          <a href="/search">Search Bills</a>
+        </nav>
+      </div>
+      <p class="mission-note">
+        Straight-ahead summaries built from the official bill text. We keep the source links front and center and leave the decision up to you.
+      </p>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

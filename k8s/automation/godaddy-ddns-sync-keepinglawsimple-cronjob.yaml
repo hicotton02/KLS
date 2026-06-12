@@ -1,0 +1,62 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: automation-godaddy-ddns-sync-keepinglawsimple
+  namespace: automation
+  labels:
+    skazpro.com/customer: skazpro
+    skazpro.com/scope: skazpro
+    skazpro.com/grace-seconds: "900"
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: sync
+              image: curlimages/curl:8.13.0
+              imagePullPolicy: IfNotPresent
+              command:
+                - sh
+                - -lc
+                - >
+                  curl --fail --silent --show-error
+                  -X POST
+                  -H "Authorization: Bearer ${GODADDY_SERVICE_TOKEN}"
+                  -H "Content-Type: application/json"
+                  --data '{}'
+                  "http://automation-godaddy-api.automation.svc.cluster.local/v1/domains/keepinglawsimple.org/records/A/@/sync"
+              env:
+                - name: GODADDY_SERVICE_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: automation-godaddy-api-secrets
+                      key: GODADDY_SERVICE_TOKEN
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 128Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+          nodeSelector:
+            pool: cpu

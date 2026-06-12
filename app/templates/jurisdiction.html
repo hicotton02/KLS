@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+
+{% block content %}
+<a class="back-link" href="/">All coverage areas</a>
+
+<section class="hero-card">
+  <div>
+    <p class="eyebrow">{{ jurisdiction.kind }} coverage</p>
+    <h1>{{ jurisdiction.name }}</h1>
+    {% if jurisdiction.coverage_status == "live" %}
+    <p class="hero-copy">
+      {% if jurisdiction.kind == "federal" %}
+      This page tracks recent bills in Congress with the official text, where each bill stands, and a plain English breakdown so regular folks can see what is in it and make up their own minds.
+      {% else %}
+      This page tracks bills for {{ jurisdiction.name }} with the official text, where each bill stands, and a plain English breakdown so regular folks can see what is in it and make up their own minds.
+      {% endif %}
+    </p>
+    {% else %}
+    <p class="hero-copy">
+      This page is reserved for {{ jurisdiction.name }} coverage.
+    </p>
+    {% endif %}
+    <p class="hero-copy">
+      Official source:
+      {% if jurisdiction.source_url %}
+      <a href="{{ jurisdiction.source_url }}" target="_blank" rel="noopener">{{ jurisdiction.source_name }}</a>
+      {% else %}
+      {{ jurisdiction.source_name }}
+      {% endif %}
+    </p>
+    {% if latest_year and selected_year and selected_year != latest_year %}
+    <p class="cell-note">You are looking at the archived {{ selected_year }} session.</p>
+    {% endif %}
+    {% if sync_status %}
+    <p class="sync-note{% if sync_status.is_running %} sync-note-running{% endif %}">
+      <strong>{{ sync_status.headline }}</strong>
+      {% if sync_status.detail %}<span>{{ sync_status.detail }}</span>{% endif %}
+    </p>
+    {% endif %}
+  </div>
+  {% if jurisdiction.coverage_status == "live" %}
+  <div class="stats-grid">
+    <article class="stat-card">
+      <span>Total Bills</span>
+      <strong>{{ counts.total }}</strong>
+    </article>
+    <article class="stat-card">
+      <span>Still Active</span>
+      <strong>{{ counts.active }}</strong>
+    </article>
+    <article class="stat-card">
+      <span>Passed</span>
+      <strong>{{ counts.passed }}</strong>
+    </article>
+    <article class="stat-card">
+      <span>Did Not Pass</span>
+      <strong>{{ counts.failed }}</strong>
+    </article>
+  </div>
+  {% else %}
+  <div class="detail-status-card">
+    <span class="coverage-chip coverage-{{ jurisdiction.coverage_status }}">{{ jurisdiction.coverage_note }}</span>
+    <p>{{ jurisdiction.description }}</p>
+    <p class="cell-note">Coverage details will appear here as records are loaded.</p>
+  </div>
+{% endif %}
+</section>
+
+{% if jurisdiction.coverage_status == "live" %}
+<section class="panel">
+  {% if available_years %}
+  <form method="get" class="filters">
+    <label>
+      <span>{% if jurisdiction.kind == "federal" %}Congress{% else %}Year{% endif %}</span>
+      <select name="year">
+        {% for year_option in available_years %}
+        <option value="{{ year_option }}" {% if year_option == selected_year %}selected{% endif %}>{{ year_option }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>
+      <span>Search</span>
+      <input type="search" name="q" value="{{ query }}" placeholder="{% if jurisdiction.kind == 'federal' %}HR1, energy, budget, sponsor{% else %}HB0002, permits, education, sponsor{% endif %}">
+    </label>
+
+    <label>
+      <span>Status</span>
+      <select name="status">
+        <option value="all" {% if status == "all" %}selected{% endif %}>All bills</option>
+        <option value="active" {% if status == "active" %}selected{% endif %}>Active</option>
+        <option value="passed" {% if status == "passed" %}selected{% endif %}>Passed</option>
+        <option value="failed" {% if status == "failed" %}selected{% endif %}>Did not pass</option>
+      </select>
+    </label>
+
+    <label>
+      <span>Tag</span>
+      <select name="tag">
+        <option value="" {% if not tag %}selected{% endif %}>All tags</option>
+        {% for tag_option in available_tags %}
+        <option value="{{ tag_option }}" {% if tag_option == tag %}selected{% endif %}>{{ tag_option|replace("-", " ")|title }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <button type="submit">Update List</button>
+  </form>
+  {% else %}
+  <p class="cell-note">No session data is loaded for {{ jurisdiction.name }} yet.</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  {% if bills %}
+  <div class="table-wrap">
+    <table class="bill-table">
+      <thead>
+        <tr>
+          <th>Bill</th>
+          <th>Title</th>
+          <th>Status</th>
+          <th>Last Action</th>
+          <th class="updated-column">Updated</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for bill in bills %}
+        <tr>
+          <td>
+            <a class="bill-link" href="{{ bill.href }}">
+              {{ bill.bill_num }}
+            </a>
+          </td>
+          <td>
+            <div class="title-cell">
+              <strong><a class="bill-link" href="{{ bill.href }}">{{ bill.catch_title }}</a></strong>
+              <small>{{ bill.sponsor }}</small>
+              {% if bill.bill_tags_json %}
+              <div class="tag-row">
+                {% for item in bill.bill_tags_json %}
+                <span class="topic-chip">{{ item|replace("-", " ")|title }}</span>
+                {% endfor %}
+              </div>
+              {% endif %}
+            </div>
+          </td>
+          <td>
+            <span class="status-pill status-{{ bill.outcome }}">{{ bill.status_label }}</span>
+            <small class="cell-note">{{ bill.bill_status }}</small>
+          </td>
+          <td>{{ bill.last_action }}</td>
+          <td class="updated-column">{{ bill.last_action_date|format_date }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <h2>No bills are loaded yet.</h2>
+    <p>The sync job may still be running, or the selected filters returned no results for {{ jurisdiction.name }}.</p>
+  </div>
+  {% endif %}
+</section>
+{% else %}
+<section class="panel">
+  <h2>No Records Yet</h2>
+  <p>This page does not have records loaded yet.</p>
+</section>
+{% endif %}
+{% endblock %}

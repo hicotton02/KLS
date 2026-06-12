@@ -1,0 +1,399 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keeping-law-simple-traffic-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: keeping-law-simple-traffic-dashboard
+    app.kubernetes.io/part-of: monitoring
+data:
+  keeping-law-simple-traffic.json: |
+    {
+      "editable": true,
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "HTTP Request Rate by Route",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+          "options": {
+            "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "expr": "sum by (route) (rate(kls_http_requests_total[5m]))",
+              "legendFormat": "{{route}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "4xx and 5xx Responses",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+          "options": {
+            "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "expr": "sum by (status_code) (rate(kls_http_requests_total{status_code=~\"4..|5..\"}[5m]))",
+              "legendFormat": "{{status_code}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "P95 Latency by Route",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+          "options": {
+            "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, route) (rate(kls_http_request_duration_seconds_bucket[5m])))",
+              "legendFormat": "{{route}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Human Page Views (5m rate)",
+          "gridPos": {"h": 8, "w": 6, "x": 12, "y": 8},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "reqps", "decimals": 2}, "overrides": []},
+          "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+          "targets": [
+            {
+              "expr": "sum(rate(kls_tracked_page_views_total{traffic_type=\"human\"}[5m]))",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "Bot Page Views (5m rate)",
+          "gridPos": {"h": 8, "w": 6, "x": 18, "y": 8},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "reqps", "decimals": 2}, "overrides": []},
+          "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+          "targets": [
+            {
+              "expr": "sum(rate(kls_tracked_page_views_total{traffic_type=\"bot\"}[5m]))",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "heatmap",
+          "title": "Request Latency Heatmap",
+          "gridPos": {"h": 9, "w": 12, "x": 0, "y": 16},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+          "options": {
+            "calculate": false,
+            "legend": {"show": true},
+            "rowsFrame": {"layout": "auto"},
+            "tooltip": {"mode": "single", "yHistogram": false},
+            "yAxis": {"axisPlacement": "left", "reverse": false, "unit": "s"}
+          },
+          "targets": [
+            {
+              "expr": "sum by (le) (rate(kls_http_request_duration_seconds_bucket{route!~\"healthz|metrics|robots|sitemap|static\"}[5m]))",
+              "format": "heatmap",
+              "legendFormat": "{{le}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "type": "geomap",
+          "title": "Visitor Map by Country (24h)",
+          "gridPos": {"h": 9, "w": 12, "x": 12, "y": 16},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "continuous-BlYlRd"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "#d9dde5", "value": null},
+                  {"color": "#7d8ca0", "value": 5},
+                  {"color": "#3e5064", "value": 25},
+                  {"color": "#18283a", "value": 100}
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "basemap": {
+              "config": {
+                "showLabels": true,
+                "theme": "light"
+              },
+              "name": "Basemap",
+              "type": "carto"
+            },
+            "controls": {
+              "mouseWheelZoom": true,
+              "showAttribution": true,
+              "showDebug": false,
+              "showMeasure": false,
+              "showScale": false,
+              "showZoom": true
+            },
+            "layers": [
+              {
+                "config": {
+                  "showLegend": true,
+                  "style": {
+                    "color": {
+                      "field": "Value"
+                    },
+                    "opacity": 0.85,
+                    "rotation": {
+                      "fixed": 0,
+                      "max": 360,
+                      "min": -360,
+                      "mode": "mod"
+                    },
+                    "size": {
+                      "field": "Value",
+                      "max": 32,
+                      "min": 6
+                    },
+                    "symbol": {
+                      "fixed": "img/icons/marker/circle.svg",
+                      "mode": "fixed"
+                    },
+                    "text": {
+                      "field": "country_code",
+                      "fixed": "",
+                      "mode": "field"
+                    },
+                    "textConfig": {
+                      "fontSize": 10,
+                      "offsetX": 0,
+                      "offsetY": -16,
+                      "textAlign": "center",
+                      "textBaseline": "middle"
+                    }
+                  }
+                },
+                "filterData": {
+                  "id": "byRefId",
+                  "options": "A"
+                },
+                "location": {
+                  "gazetteer": "public/gazetteer/countries.json",
+                  "lookup": "country_code",
+                  "mode": "lookup"
+                },
+                "name": "Human visitors",
+                "opacity": 0.8,
+                "tooltip": true,
+                "type": "markers"
+              }
+            ],
+            "tooltip": {
+              "mode": "details"
+            },
+            "view": {
+              "allLayers": true,
+              "id": "zero",
+              "lastOnly": false,
+              "lat": 20,
+              "lon": 0,
+              "shared": false,
+              "zoom": 1
+            }
+          },
+          "targets": [
+            {
+              "expr": "topk(30, sum by (country_code) (increase(kls_tracked_page_views_by_country_total{traffic_type=\"human\",country_code!=\"ZZ\"}[24h])))",
+              "format": "table",
+              "instant": true,
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "type": "geomap",
+          "title": "Visitor Map by City/Region (24h)",
+          "gridPos": {"h": 10, "w": 12, "x": 0, "y": 25},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "continuous-BlYlRd"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "#d9dde5", "value": null},
+                  {"color": "#7d8ca0", "value": 3},
+                  {"color": "#3e5064", "value": 10},
+                  {"color": "#18283a", "value": 25}
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "basemap": {
+              "config": {
+                "showLabels": true,
+                "theme": "light"
+              },
+              "name": "Basemap",
+              "type": "carto"
+            },
+            "controls": {
+              "mouseWheelZoom": true,
+              "showAttribution": true,
+              "showDebug": false,
+              "showMeasure": false,
+              "showScale": false,
+              "showZoom": true
+            },
+            "layers": [
+              {
+                "config": {
+                  "showLegend": true,
+                  "style": {
+                    "color": {
+                      "field": "Value"
+                    },
+                    "opacity": 0.8,
+                    "rotation": {
+                      "fixed": 0,
+                      "max": 360,
+                      "min": -360,
+                      "mode": "mod"
+                    },
+                    "size": {
+                      "field": "Value",
+                      "max": 28,
+                      "min": 5
+                    },
+                    "symbol": {
+                      "fixed": "img/icons/marker/circle.svg",
+                      "mode": "fixed"
+                    },
+                    "text": {
+                      "field": "city_name",
+                      "fixed": "",
+                      "mode": "field"
+                    },
+                    "textConfig": {
+                      "fontSize": 10,
+                      "offsetX": 0,
+                      "offsetY": -14,
+                      "textAlign": "center",
+                      "textBaseline": "middle"
+                    }
+                  }
+                },
+                "filterData": {
+                  "id": "byRefId",
+                  "options": "A"
+                },
+                "location": {
+                  "latitude": "latitude",
+                  "longitude": "longitude",
+                  "mode": "coords"
+                },
+                "name": "Human visitors",
+                "opacity": 0.8,
+                "tooltip": true,
+                "type": "markers"
+              }
+            ],
+            "tooltip": {
+              "mode": "details"
+            },
+            "view": {
+              "allLayers": true,
+              "id": "zero",
+              "lastOnly": false,
+              "lat": 20,
+              "lon": 0,
+              "shared": false,
+              "zoom": 1
+            }
+          },
+          "targets": [
+            {
+              "expr": "topk(40, sum by (country_code, region_name, city_name, latitude, longitude) (increase(kls_tracked_page_views_by_location_total{traffic_type=\"human\",city_name!=\"\"}[24h])))",
+              "format": "table",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "convertFieldType",
+              "options": {
+                "conversions": [
+                  {
+                    "destinationType": "number",
+                    "targetField": "latitude"
+                  },
+                  {
+                    "destinationType": "number",
+                    "targetField": "longitude"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "type": "table",
+          "title": "Human Page Views by Route (24h)",
+          "gridPos": {"h": 10, "w": 12, "x": 12, "y": 25},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {}, "overrides": []},
+          "options": {
+            "showHeader": true,
+            "sortBy": [{"desc": true, "displayName": "Value"}]
+          },
+          "targets": [
+            {
+              "expr": "topk(10, sum by (route) (increase(kls_tracked_page_views_by_route_total{traffic_type=\"human\"}[24h])))",
+              "format": "table",
+              "instant": true,
+              "refId": "A"
+            }
+          ]
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 41,
+      "tags": ["keeping-law-simple", "traffic", "security"],
+      "time": {"from": "now-24h", "to": "now"},
+      "timezone": "America/Denver",
+      "title": "Keeping Law Simple Traffic",
+      "uid": "keeping-law-simple-traffic",
+      "version": 4
+    }
