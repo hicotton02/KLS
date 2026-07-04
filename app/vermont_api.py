@@ -57,6 +57,7 @@ class VermontApiClient:
             headers={"User-Agent": "keeping-law-simple/1.0"},
             timeout=self.settings.request_timeout_seconds,
             follow_redirects=True,
+            verify=False,
         )
 
     def close(self) -> None:

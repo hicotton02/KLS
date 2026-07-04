@@ -6,10 +6,11 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-import httpx
+import requests
 from bs4 import BeautifulSoup, Tag
 
 from app.http_documents import absolute_url, fetch_document_text
+from app.http_retry import get_with_retries
 from app.settings import Settings
 from app.text_utils import clean_text, first_non_empty
 
@@ -63,11 +64,19 @@ def _sort_bill_key(bill_num: str) -> tuple[str, int]:
 class IllinoisApiClient:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.client = httpx.Client(
-            base_url=self.settings.illinois_site_base,
-            headers={"User-Agent": "keeping-law-simple/1.0"},
-            timeout=self.settings.request_timeout_seconds,
-            follow_redirects=True,
+        self.client = requests.Session()
+        self.client.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/126.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate",
+                "Upgrade-Insecure-Requests": "1",
+            }
         )
         self._range_links_by_year: dict[int, list[str]] = {}
 
@@ -79,7 +88,7 @@ class IllinoisApiClient:
         items_by_bill: dict[str, dict[str, Any]] = {}
 
         for range_link in range_links:
-            response = self.client.get(range_link)
+            response = self._get(range_link)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
             table = soup.find("table", class_=lambda classes: classes and "table-striped" in classes)
@@ -121,7 +130,7 @@ class IllinoisApiClient:
         return sorted(items_by_bill.values(), key=lambda item: _sort_bill_key(str(item["billNum"])))
 
     def fetch_bill_detail(self, detail_path: str, item: dict[str, Any] | None = None) -> dict[str, Any]:
-        response = self.client.get(detail_path)
+        response = self._get(detail_path)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -221,12 +230,24 @@ class IllinoisApiClient:
     def fetch_public_document_text(self, url: str | None) -> str:
         return fetch_document_text(self.client, url)
 
+    def _get(self, url: str, **kwargs: Any) -> Any:
+        target = absolute_url(self.settings.illinois_site_base, url) or url
+        kwargs.setdefault("timeout", self.settings.request_timeout_seconds)
+        return get_with_retries(
+            self.client,
+            target,
+            max_attempts=5,
+            base_delay_seconds=2.0,
+            max_delay_seconds=45.0,
+            **kwargs,
+        )
+
     def _range_links_for_year(self, year: int) -> list[str]:
         cached = self._range_links_by_year.get(year)
         if cached is not None:
             return cached
 
-        response = self.client.get("/legislation")
+        response = self._get("/legislation")
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -395,7 +416,7 @@ class IllinoisApiClient:
         return ""
 
     def _version_links(self, full_text_path: str) -> tuple[str | None, str | None, str | None]:
-        response = self.client.get(full_text_path)
+        response = self._get(full_text_path)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 

@@ -173,13 +173,17 @@ class VirginiaApiClient:
 
         return sorted(items, key=lambda item: _sort_bill_key(str(item["billNum"])))
 
-    def fetch_bill_detail(self, year: int, bill_num: str) -> dict[str, Any]:
+    def fetch_bill_detail(self, year: int, bill_num: str, item: dict[str, Any] | None = None) -> dict[str, Any]:
         normalized_bill = normalize_virginia_bill_number(bill_num)
         if not normalized_bill:
             raise ValueError(f"Virginia bill number could not be parsed from {bill_num}")
 
         session_code = self.session_code_for_year(year)
         legislation = self._fetch_legislation(session_code, normalized_bill)
+        if not legislation and item is not None:
+            return self._fallback_detail_from_item(year, session_code, normalized_bill, item)
+        if not legislation:
+            raise ValueError(f"Virginia legislation detail did not include {normalized_bill}")
         legislation_id = int(legislation["LegislationID"])
         summaries = self._fetch_summaries(session_code, normalized_bill)
         texts = self._fetch_texts(session_code, legislation_id)
@@ -290,9 +294,7 @@ class VirginiaApiClient:
         response.raise_for_status()
         payload = self._safe_json(response)
         items = payload.get("Legislations") or []
-        if not items:
-            raise ValueError(f"Virginia legislation detail did not include {bill_num}")
-        return dict(items[0])
+        return dict(items[0]) if items else {}
 
     def _fetch_summaries(self, session_code: str, bill_num: str) -> list[dict[str, Any]]:
         response = self.client.get(
@@ -466,3 +468,57 @@ class VirginiaApiClient:
         if not text:
             return ""
         return f"<p>{text}</p>"
+
+    def _fallback_detail_from_item(
+        self,
+        year: int,
+        session_code: str,
+        bill_num: str,
+        item: dict[str, Any],
+    ) -> dict[str, Any]:
+        title = first_non_empty(
+            clean_text(str(item.get("billTitle") or "")),
+            clean_text(str(item.get("catchTitle") or "")),
+            bill_num,
+        )
+        last_action = first_non_empty(clean_text(str(item.get("lastAction") or "")), clean_text(str(item.get("billStatus") or "")))
+        last_action_date = clean_text(str(item.get("lastActionDate") or ""))
+        action_rows = []
+        if last_action or last_action_date:
+            action_rows.append({"statusDate": last_action_date, "statusMessage": last_action, "location": ""})
+        return {
+            "bill": bill_num,
+            "billType": _bill_type(bill_num),
+            "catchTitle": title,
+            "sponsor": clean_text(str(item.get("sponsor") or "")),
+            "billTitle": title,
+            "billStatus": first_non_empty(clean_text(str(item.get("billStatus") or "")), last_action),
+            "lastAction": last_action,
+            "lastActionDate": last_action_date,
+            "signedDate": clean_text(str(item.get("signedDate") or "")),
+            "effectiveDate": clean_text(str(item.get("effectiveDate") or "")),
+            "chapter": clean_text(str(item.get("chapter") or "")),
+            "enrolledNumber": clean_text(str(item.get("enrolledNumber") or "")),
+            "sponsorStringHouse": clean_text(str(item.get("sponsor") or "")) if bill_num.startswith("H") else None,
+            "sponsorStringSenate": clean_text(str(item.get("sponsor") or "")) if bill_num.startswith("S") else None,
+            "introduced": None,
+            "digest": self.bill_url(session_code, bill_num),
+            "summary": self.bill_url(session_code, bill_num),
+            "currentVersionPath": None,
+            "currentVersionFingerprint": "|".join(
+                part
+                for part in (
+                    clean_text(str(item.get("enrolledNumber") or "")),
+                    last_action,
+                    last_action_date,
+                    clean_text(str(year)),
+                )
+                if part
+            ),
+            "summaryHTML": self._paragraph_html(title),
+            "digestHTML": self._paragraph_html(last_action),
+            "currentBillHTML": "",
+            "billActions": action_rows,
+            "amendments": [],
+            "officialPage": self.bill_url(session_code, bill_num),
+        }

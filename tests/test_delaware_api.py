@@ -302,3 +302,22 @@ def test_fetch_bill_detail_falls_back_when_gateway_blocks_the_page() -> None:
     assert detail["lastAction"] == "Introduced in House"
     assert detail["lastActionDate"] == "2026-04-22"
     assert detail["currentVersionPath"] is None
+
+
+def test_fetch_public_document_text_treats_forbidden_document_as_unavailable() -> None:
+    settings = get_settings()
+    api = DelawareApiClient(settings)
+    api.close()
+
+    api.client = httpx.Client(
+        base_url=settings.delaware_site_base,
+        follow_redirects=True,
+        transport=httpx.MockTransport(lambda request: httpx.Response(403, text="forbidden", request=request)),
+    )
+
+    try:
+        text = api.fetch_public_document_text("/json/BillDetail/GenerateHtmlDocument?legislationId=1")
+    finally:
+        api.close()
+
+    assert text == ""

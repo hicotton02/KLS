@@ -10,6 +10,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from app.http_documents import absolute_url, fetch_document_text
+from app.http_retry import get_with_retries
 from app.settings import Settings
 from app.text_utils import clean_text
 
@@ -64,7 +65,7 @@ class NebraskaApiClient:
         self.client.close()
 
     def fetch_year_bills(self, year: int) -> list[dict[str, Any]]:
-        response = self.client.get(
+        response = self._get(
             "/bills/search_by_date.php",
             params={"SessionDay": str(year), "print": "csv"},
         )
@@ -104,7 +105,7 @@ class NebraskaApiClient:
         return sorted(items, key=lambda item: _sort_bill_key(str(item["billNum"])))
 
     def fetch_bill_detail(self, detail_path: str, item: dict[str, Any] | None = None) -> dict[str, Any]:
-        response = self.client.get(detail_path)
+        response = self._get(detail_path)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -151,6 +152,16 @@ class NebraskaApiClient:
 
     def fetch_public_document_text(self, url: str | None) -> str:
         return fetch_document_text(self.client, url)
+
+    def _get(self, url: str, **kwargs: Any) -> httpx.Response:
+        return get_with_retries(
+            self.client,
+            url,
+            max_attempts=7,
+            base_delay_seconds=2.0,
+            max_delay_seconds=90.0,
+            **kwargs,
+        )
 
     @staticmethod
     def _bill_number(soup: BeautifulSoup, item: dict[str, Any] | None) -> str:
@@ -240,7 +251,7 @@ class NebraskaApiClient:
         raise ValueError("Nebraska action history path could not be determined")
 
     def _fetch_actions(self, path: str) -> list[dict[str, str]]:
-        response = self.client.get(path)
+        response = self._get(path)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         table = soup.find("table")

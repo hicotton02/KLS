@@ -78,7 +78,7 @@ def test_fetch_bill_detail_extracts_versions_and_amendments() -> None:
             "long_title": "To change the tax code and reporting rules.",
             "version": "Passed House",
             "download": "/documents/current.pdf",
-            "subjects": ["Taxes", "Reporting"],
+            "subjects": [{"primary": "Taxes", "secondary": "Reporting"}],
             "sponsors": [{"full_name": "Rep. Alpha"}],
             "amendments": "/api/v2/general_assembly_136/legislation/hb20/amendments/",
             "chamber": "House",
@@ -118,6 +118,6 @@ def test_fetch_bill_detail_extracts_versions_and_amendments() -> None:
     assert detail["introduced"] == "https://search-prod.lis.state.oh.us/documents/intro.html"
     assert detail["currentVersionPath"] == "https://search-prod.lis.state.oh.us/documents/current.pdf"
     assert detail["officialPage"] == "https://www.legislature.ohio.gov/legislation/136/hb20"
+    assert "Subjects: Taxes; Reporting" in detail["digestHTML"]
     assert detail["amendments"][0]["amendmentNumber"] == "A0001"
     assert detail["amendments"][0]["documentUrl"] == "https://search-prod.lis.state.oh.us/documents/amendment-a0001.html"
-

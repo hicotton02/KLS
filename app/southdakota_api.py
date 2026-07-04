@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from app.http_documents import absolute_url, fetch_document_text
+from app.http_retry import get_with_retries
 from app.settings import Settings
 from app.text_utils import clean_text, first_non_empty
 
@@ -65,7 +66,7 @@ class SouthDakotaApiClient:
     def fetch_year_bills(self, year: int) -> list[dict[str, Any]]:
         session = self._session_for_year(year)
         session_id = int(session["SessionId"])
-        response = self.site_client.get(f"/api/Bills/BillStatus/{session_id}")
+        response = self._get(f"/api/Bills/BillStatus/{session_id}")
         response.raise_for_status()
 
         items: list[dict[str, Any]] = []
@@ -304,7 +305,7 @@ class SouthDakotaApiClient:
     def _load_sessions(self) -> None:
         if self._sessions_by_id:
             return
-        response = self.site_client.get("/api/Sessions")
+        response = self._get("/api/Sessions")
         response.raise_for_status()
         for session in response.json():
             session_id = int(session["SessionId"])
@@ -330,9 +331,19 @@ class SouthDakotaApiClient:
         return session
 
     def _json_get(self, path: str) -> Any:
-        response = self.site_client.get(path)
+        response = self._get(path)
         response.raise_for_status()
         return response.json()
+
+    def _get(self, path: str, **kwargs: Any) -> httpx.Response:
+        return get_with_retries(
+            self.site_client,
+            path,
+            max_attempts=7,
+            base_delay_seconds=2.0,
+            max_delay_seconds=90.0,
+            **kwargs,
+        )
 
     @staticmethod
     def _bill_id_from_path(detail_path: str) -> int:

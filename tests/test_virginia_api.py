@@ -186,3 +186,45 @@ def test_fetch_bill_detail_builds_actions_and_amendments() -> None:
     assert detail["introduced"].endswith("/HB5.HTML")
     assert len(detail["billActions"]) == 2
     assert [item["amendmentNumber"] for item in detail["amendments"]] == ["HB5AC", "HB5G", "HB5H2"]
+
+
+def test_fetch_bill_detail_falls_back_to_csv_item_when_detail_api_is_empty() -> None:
+    settings = get_settings()
+    api = VirginiaApiClient(settings)
+    api.client.close()
+
+    item = {
+        "billNum": "SR93",
+        "billType": "SR",
+        "catchTitle": "Commending Karen Grady.",
+        "billTitle": "Commending Karen Grady.",
+        "sponsor": "Example",
+        "billStatus": "Passed",
+        "lastAction": "Agreed to by Senate",
+        "lastActionDate": "2026-02-20",
+        "enrolledNumber": "SR93",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/Session/api/getDefaultSessionAsync"):
+            return httpx.Response(200, json={"SessionCode": "20261"}, request=request)
+        if request.url.path.endswith("/AdvancedLegislationSearch/api/GetLegislationListAsync"):
+            return httpx.Response(200, json={"Legislations": []}, request=request)
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    api.client = httpx.Client(
+        base_url=settings.virginia_site_base,
+        follow_redirects=True,
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        detail = api.fetch_bill_detail(2026, "SR93", item)
+    finally:
+        api.close()
+
+    assert detail["bill"] == "SR93"
+    assert detail["billStatus"] == "Passed"
+    assert detail["lastAction"] == "Agreed to by Senate"
+    assert detail["lastActionDate"] == "2026-02-20"
+    assert detail["summaryHTML"] == "<p>Commending Karen Grady.</p>"

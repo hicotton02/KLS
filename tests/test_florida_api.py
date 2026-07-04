@@ -3,8 +3,9 @@ from __future__ import annotations
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+from bs4 import BeautifulSoup
 
-from app.florida_api import FloridaApiClient
+from app.florida_api import FloridaApiClient, normalize_florida_bill_number
 from app.settings import get_settings
 
 
@@ -224,3 +225,10 @@ def test_fetch_bill_detail_reads_versions_history_and_amendments() -> None:
     assert detail["amendments"][0]["status"].startswith("Replaced by Committee Substitute")
     assert "revise local zoning rules" in bill_text
     assert "updated zoning language" in amendment_text
+
+
+def test_heading_bill_accepts_compound_substitute_labels() -> None:
+    soup = BeautifulSoup("<h2>CS/CS/CS/SB 1220: Transportation</h2>", "html.parser")
+
+    assert FloridaApiClient._heading_bill(soup) == ("SB1220", "Transportation")
+    assert normalize_florida_bill_number("CS/HB 123") == "HB0123"

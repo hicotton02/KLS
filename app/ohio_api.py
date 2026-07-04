@@ -36,6 +36,33 @@ def normalize_ohio_bill_number(value: str | None) -> str:
     return ""
 
 
+def ohio_text(value: Any) -> str:
+    if isinstance(value, dict):
+        return first_non_empty(
+            clean_text(str(value.get("primary") or "")),
+            clean_text(str(value.get("secondary") or "")),
+            clean_text(str(value.get("name") or "")),
+            clean_text(str(value.get("label") or "")),
+            clean_text(str(value.get("value") or "")),
+        )
+    if isinstance(value, list):
+        return "; ".join(part for part in (ohio_text(item) for item in value) if part)
+    return clean_text(str(value or ""))
+
+
+def ohio_subject_text(value: Any) -> str:
+    if isinstance(value, dict):
+        parts = [
+            clean_text(str(value.get("primary") or "")),
+            clean_text(str(value.get("secondary") or "")),
+            clean_text(str(value.get("name") or "")),
+            clean_text(str(value.get("label") or "")),
+            clean_text(str(value.get("value") or "")),
+        ]
+        return "; ".join(dict.fromkeys(part for part in parts if part))
+    return ohio_text(value)
+
+
 def _sort_bill_key(bill_num: str) -> tuple[str, int]:
     match = re.fullmatch(r"([A-Z]+)(\d+)", str(bill_num or "").strip().upper())
     if match is None:
@@ -128,7 +155,7 @@ class OhioApiClient:
             amendment_response.raise_for_status()
             amendments = self._amendments(amendment_response.json())
 
-        subjects = [clean_text(subject) for subject in (current.get("subjects") or []) if clean_text(subject)]
+        subjects = [ohio_subject_text(subject) for subject in (current.get("subjects") or []) if ohio_subject_text(subject)]
         digest_bits: list[str] = []
         if clean_text(current.get("local_impact_statement")):
             digest_bits.append(f"Local impact: {clean_text(current.get('local_impact_statement'))}")
@@ -220,12 +247,12 @@ class OhioApiClient:
         amendments: list[dict[str, Any]] = []
         seen: set[str] = set()
         for amendment in payload:
-            amendment_number = clean_text(amendment.get("amendment_number")).upper()
+            amendment_number = ohio_text(amendment.get("amendment_number")).upper()
             if not amendment_number or amendment_number in seen:
                 continue
             seen.add(amendment_number)
             sponsor = self._primary_sponsor(amendment)
-            summary_parts = [clean_text(amendment.get("version"))]
+            summary_parts = [ohio_text(amendment.get("version"))]
             if sponsor:
                 summary_parts.append(f"Sponsor: {sponsor}")
             amendments.append(
@@ -234,7 +261,7 @@ class OhioApiClient:
                     "adoptedDate": "",
                     "documentUrl": absolute_url(
                         self.settings.ohio_site_base,
-                        clean_text(amendment.get("html_link")) or clean_text(amendment.get("link")),
+                        ohio_text(amendment.get("html_link")) or ohio_text(amendment.get("link")),
                     ),
                     "summaryText": ". ".join(part for part in summary_parts if part),
                     "source": "Ohio Legislature SOLAR API",

@@ -10,6 +10,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from app.http_documents import absolute_url, fetch_document_text
+from app.http_retry import get_with_retries
 from app.settings import Settings
 from app.text_utils import clean_text
 
@@ -88,7 +89,7 @@ class MassachusettsApiClient:
         self.client = httpx.Client(
             base_url=self.settings.massachusetts_site_base,
             headers={"User-Agent": "keeping-law-simple/1.0"},
-            timeout=self.settings.request_timeout_seconds,
+            timeout=max(self.settings.request_timeout_seconds, 180.0),
             follow_redirects=True,
         )
 
@@ -103,7 +104,7 @@ class MassachusettsApiClient:
         items: list[dict[str, Any]] = []
         seen: set[str] = set()
         for page in range(1, total_pages + 1):
-            response = self.client.get(
+            response = self._get(
                 "/Bills/Search",
                 params={
                     "SearchTerms": "",
@@ -160,7 +161,7 @@ class MassachusettsApiClient:
         return sorted(items, key=lambda item: _sort_bill_key(str(item["billNum"])))
 
     def fetch_bill_detail(self, detail_path: str, item: dict[str, Any] | None = None) -> dict[str, Any]:
-        response = self.client.get(detail_path)
+        response = self._get(detail_path)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -232,8 +233,18 @@ class MassachusettsApiClient:
     def fetch_public_document_text(self, url: str | None) -> str:
         return fetch_document_text(self.client, url)
 
+    def _get(self, url: str, **kwargs: Any) -> httpx.Response:
+        return get_with_retries(
+            self.client,
+            url,
+            max_attempts=4,
+            base_delay_seconds=3.0,
+            max_delay_seconds=60.0,
+            **kwargs,
+        )
+
     def _general_court_refiner(self, general_court: int) -> tuple[str, int]:
-        response = self.client.get("/Bills/Search", params={"SearchTerms": ""})
+        response = self._get("/Bills/Search", params={"SearchTerms": ""})
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         prefix = _ordinal(general_court)
@@ -296,7 +307,7 @@ class MassachusettsApiClient:
         return absolute_url(self.settings.massachusetts_site_base, anchor.get("href")) or ""
 
     def _history_actions(self, bill_num: str, general_court: int) -> list[dict[str, str]]:
-        response = self.client.get(f"/Bills/{general_court}/{bill_num}/BillHistory")
+        response = self._get(f"/Bills/{general_court}/{bill_num}/BillHistory")
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         actions: list[dict[str, str]] = []

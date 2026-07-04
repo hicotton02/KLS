@@ -1159,7 +1159,7 @@ def sync_virginia(
                     continue
 
                 try:
-                    detail = api.fetch_bill_detail(year, str(item["billNum"]))
+                    detail = api.fetch_bill_detail(year, str(item["billNum"]), item)
                     official_summary_text = first_non_empty(
                         html_to_text(detail.get("summaryHTML")),
                         detail.get("catchTitle"),

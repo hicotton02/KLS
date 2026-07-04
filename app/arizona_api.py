@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 
 from app.http_documents import absolute_url, fetch_document_text
+from app.http_retry import get_with_retries
 from app.settings import Settings
 
 
@@ -55,7 +56,7 @@ class ArizonaApiClient:
 
     def fetch_year_bills(self, year: int) -> list[dict[str, Any]]:
         session = self._session_for_year(year)
-        response = self.client.get("/api/BillStatus/", params={"sessionId": session["session_id"]})
+        response = self._get("/api/BillStatus/", params={"sessionId": session["session_id"]})
         response.raise_for_status()
         rows = response.json()
 
@@ -88,7 +89,7 @@ class ArizonaApiClient:
         normalized_bill_num = str(bill_num or "").strip().upper()
         legislative_body = "H" if normalized_bill_num.startswith("HB") else "S"
 
-        bill_response = self.client.get(
+        bill_response = self._get(
             "/api/Bill/",
             params={
                 "billNumber": normalized_bill_num,
@@ -189,7 +190,7 @@ class ArizonaApiClient:
         return fetch_document_text(self.client, url)
 
     def _json(self, path: str, params: dict[str, Any]) -> list[dict[str, Any]]:
-        response = self.client.get(path, params=params)
+        response = self._get(path, params=params)
         response.raise_for_status()
         payload = response.json()
         if isinstance(payload, list):
@@ -200,7 +201,7 @@ class ArizonaApiClient:
         cached = self._session_cache.get(year)
         if cached is not None:
             return cached
-        response = self.client.get("/api/Session/")
+        response = self._get("/api/Session/")
         response.raise_for_status()
         rows = response.json()
         for row in rows:
@@ -284,11 +285,21 @@ class ArizonaApiClient:
     def _fetch_optional_html(self, url: str) -> str:
         if not url:
             return ""
-        response = self.client.get(url)
+        response = self._get(url)
         response.raise_for_status()
         if "html" not in response.headers.get("content-type", "").lower():
             return ""
         return response.text
+
+    def _get(self, url: str, **kwargs: Any) -> httpx.Response:
+        return get_with_retries(
+            self.client,
+            url,
+            max_attempts=6,
+            base_delay_seconds=2.0,
+            max_delay_seconds=45.0,
+            **kwargs,
+        )
 
     @staticmethod
     def _paragraph_html(text: str) -> str:

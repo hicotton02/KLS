@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import time
 from datetime import datetime
 from typing import Any
 
@@ -9,12 +8,13 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from app.http_documents import absolute_url
+from app.http_retry import get_with_retries
 from app.settings import Settings
 from app.text_utils import clean_text, html_to_text, pdf_bytes_to_text
 
 
-FLORIDA_BILL_LABEL_PATTERN = re.compile(r"^(?P<prefix>[A-Z]+)\s+(?P<number>\d+)$")
-FLORIDA_BILL_HEADING_PATTERN = re.compile(r"^(?P<label>[A-Z]+\s+\d+):\s*(?P<title>.+)$")
+FLORIDA_BILL_LABEL_PATTERN = re.compile(r"^(?P<prefix>(?:[A-Z]+/)*[A-Z]+)\s+(?P<number>\d+)$")
+FLORIDA_BILL_HEADING_PATTERN = re.compile(r"^(?P<label>(?:[A-Z]+/)*[A-Z]+\s+\d+):\s*(?P<title>.+)$")
 
 
 def parse_florida_date(value: str | None) -> str:
@@ -36,7 +36,8 @@ def normalize_florida_bill_number(value: str | None) -> str:
     match = FLORIDA_BILL_LABEL_PATTERN.fullmatch(raw)
     if match is None:
         return ""
-    return f"{match.group('prefix')}{int(match.group('number')):04d}"
+    prefix = match.group("prefix").rsplit("/", 1)[-1]
+    return f"{prefix}{int(match.group('number')):04d}"
 
 
 def _bill_type(value: str | None) -> str:
@@ -197,18 +198,14 @@ class FloridaApiClient:
         return ranges
 
     def _get(self, url: str, **kwargs: Any) -> httpx.Response:
-        attempt = 0
-        while True:
-            response = self.client.get(url, **kwargs)
-            if response.status_code != 429 or attempt >= 5:
-                return response
-            retry_after = clean_text(response.headers.get("retry-after"))
-            try:
-                delay = float(retry_after)
-            except ValueError:
-                delay = min(12.0, 1.0 * (2**attempt))
-            time.sleep(max(1.0, delay))
-            attempt += 1
+        return get_with_retries(
+            self.client,
+            url,
+            max_attempts=7,
+            base_delay_seconds=2.0,
+            max_delay_seconds=90.0,
+            **kwargs,
+        )
 
     def _parse_bill_list_page(self, html_text: str, page_url: str) -> list[dict[str, Any]]:
         soup = BeautifulSoup(html_text, "html.parser")
@@ -255,7 +252,7 @@ class FloridaApiClient:
                 return (bill_num, clean_text(match.group("title")))
         title_tag = soup.find("title")
         title_text = clean_text(title_tag.get_text(" ", strip=True) if title_tag else "")
-        match = re.search(r"([A-Z]+\s+\d+)", title_text)
+        match = re.search(r"((?:[A-Z]+/)*[A-Z]+\s+\d+)", title_text)
         bill_num = normalize_florida_bill_number(match.group(1) if match else "")
         if bill_num:
             return (bill_num, heading_text or bill_num)

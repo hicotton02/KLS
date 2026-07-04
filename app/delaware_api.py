@@ -294,7 +294,12 @@ class DelawareApiClient:
 
     def fetch_public_document_text(self, url: str | None) -> str:
         normalized = absolute_url(self.settings.delaware_site_base, url) or ""
-        return fetch_document_text(self.client, normalized)
+        try:
+            return fetch_document_text(self.client, normalized)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {403, 404}:
+                return ""
+            raise
 
     def _normalize_feed_item(self, raw_item: dict[str, Any], session_start: int) -> dict[str, Any] | None:
         detail_path = absolute_url(self.settings.delaware_site_base, raw_item.get("Link")) or ""
