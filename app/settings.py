@@ -324,8 +324,10 @@ def get_settings() -> Settings:
         federal_congresses=_parse_int_list(os.getenv("KLS_FEDERAL_CONGRESSES"), default=(current_congress,)),
         federal_sync_limit=int(os.getenv("KLS_FEDERAL_SYNC_LIMIT", federal_sync_limit_default)),
         request_timeout_seconds=float(os.getenv("KLS_REQUEST_TIMEOUT_SECONDS", "90")),
-        ollama_base_url=os.getenv("KLS_OLLAMA_BASE_URL", "http://ollama-general.ollama.svc.cluster.local:11434"),
-        ollama_model=os.getenv("KLS_OLLAMA_MODEL", "qwen2.5:14b-instruct"),
+        ollama_base_url=os.getenv(
+            "KLS_OLLAMA_BASE_URL", "http://ai-inference-ollama.ai-platform.svc.cluster.local:11434"
+        ),
+        ollama_model=os.getenv("KLS_OLLAMA_MODEL", "qwen3.5:27b"),
         ollama_timeout_seconds=float(os.getenv("KLS_OLLAMA_TIMEOUT_SECONDS", "180")),
         sync_parallelism=max(1, int(os.getenv("KLS_SYNC_PARALLELISM", "1"))),
         analytics_enabled=_parse_bool(os.getenv("KLS_ANALYTICS_ENABLED"), default=True),

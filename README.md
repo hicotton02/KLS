@@ -47,7 +47,7 @@ The KLS repo owns the app manifests. Shared platform dependencies still live in
 the platform/Kubernetes repo:
 
 - Gateway API parent `gateway-system/skazpro-public` with KLS root and www sections.
-- `ollama-router.ollama.svc.cluster.local` for interpretation generation.
+- `ai-inference-ollama.ai-platform.svc.cluster.local` for interpretation generation.
 - `truenas-csi-iscsi-rwo` storage class for Postgres.
 - Prometheus Operator/Grafana sidecar for `ServiceMonitor` and dashboard config maps.
 - The automation namespace Godaddy API if applying the optional domain sync CronJob.

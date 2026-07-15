@@ -13,7 +13,7 @@ def test_needs_refresh_when_fact_check_version_is_missing() -> None:
         "has_interpretation": 1,
         "fact_check_status": "",
         "fact_check_version": 0,
-        "generator_model": "qwen2.5:14b-instruct",
+        "generator_model": "qwen3.5:27b",
         "bill_status": "inactive",
         "last_action": "Assigned Chapter Number 42",
         "last_action_date": "2026-03-05T00:00:00",
@@ -31,7 +31,7 @@ def test_needs_refresh_when_fact_check_version_is_missing() -> None:
         "enrolledNo": "16",
     }
 
-    assert _needs_refresh(existing, item, skip_interpretation=False, current_model="qwen2.5:14b-instruct") is True
+    assert _needs_refresh(existing, item, skip_interpretation=False, current_model="qwen3.5:27b") is True
 
 
 def test_needs_refresh_when_existing_entry_is_fallback() -> None:
@@ -39,7 +39,7 @@ def test_needs_refresh_when_existing_entry_is_fallback() -> None:
         "has_interpretation": 1,
         "fact_check_status": "fallback",
         "fact_check_version": FACT_CHECK_VERSION,
-        "generator_model": "qwen2.5:14b-instruct",
+        "generator_model": "qwen3.5:27b",
         "bill_status": "inactive",
         "last_action": "Assigned Chapter Number 42",
         "last_action_date": "2026-03-05T00:00:00",
@@ -57,7 +57,7 @@ def test_needs_refresh_when_existing_entry_is_fallback() -> None:
         "enrolledNo": "16",
     }
 
-    assert _needs_refresh(existing, item, skip_interpretation=False, current_model="qwen2.5:14b-instruct") is True
+    assert _needs_refresh(existing, item, skip_interpretation=False, current_model="qwen3.5:27b") is True
 
 
 def test_needs_refresh_when_model_changes() -> None:
@@ -83,7 +83,7 @@ def test_needs_refresh_when_model_changes() -> None:
         "enrolledNo": "16",
     }
 
-    assert _needs_refresh(existing, item, skip_interpretation=False, current_model="qwen2.5:14b-instruct") is True
+    assert _needs_refresh(existing, item, skip_interpretation=False, current_model="qwen3.5:27b") is True
 
 
 def test_validated_interpretation_gets_fact_check_metadata() -> None:
@@ -98,13 +98,13 @@ def test_validated_interpretation_gets_fact_check_metadata() -> None:
             "removed_claims": ["Removed a claim about teacher raises that was not supported by the source text."],
             "validator_notes": ["The source excerpt does not explain the fiscal impact in detail."],
         },
-        "qwen2.5:14b-instruct",
+        "qwen3.5:27b",
     )
 
     assert interpretation["fact_check_status"] == "validated"
     assert interpretation["fact_check_result"] == "trimmed"
     assert interpretation["fact_check_version"] == FACT_CHECK_VERSION
-    assert interpretation["generator_model"] == "qwen2.5:14b-instruct"
+    assert interpretation["generator_model"] == "qwen3.5:27b"
     assert interpretation["fact_check_notes"]
 
 
@@ -114,13 +114,13 @@ def test_fallback_interpretation_is_marked_source_only() -> None:
         official_summary_text="This bill changes school funding rules.",
         official_digest_text="",
         current_bill_text="",
-        generator_model="qwen2.5:14b-instruct",
+        generator_model="qwen3.5:27b",
     )
 
     assert interpretation["fact_check_status"] == "fallback"
     assert interpretation["fact_check_result"] == "source-only"
     assert interpretation["fact_check_version"] == FACT_CHECK_VERSION
-    assert interpretation["generator_model"] == "qwen2.5:14b-instruct"
+    assert interpretation["generator_model"] == "qwen3.5:27b"
     assert "official source text" in interpretation["fact_check_notes"][0]
 
 
@@ -130,11 +130,11 @@ def test_reusable_interpretation_is_kept_when_source_hash_matches() -> None:
         "interpretation_json": {
             "plain_language_title": "Education funding",
             "one_sentence_summary": "This bill changes school funding rules.",
-            "generator_model": "qwen2.5:14b-instruct",
+            "generator_model": "qwen3.5:27b",
         },
     }
 
-    reused = _reusable_interpretation(existing, "same-hash", "qwen2.5:14b-instruct")
+    reused = _reusable_interpretation(existing, "same-hash", "qwen3.5:27b")
 
     assert reused is not None
     assert reused["one_sentence_summary"] == "This bill changes school funding rules."
@@ -150,7 +150,7 @@ def test_reusable_interpretation_is_not_kept_when_model_changes() -> None:
         },
     }
 
-    reused = _reusable_interpretation(existing, "same-hash", "qwen2.5:14b-instruct")
+    reused = _reusable_interpretation(existing, "same-hash", "qwen3.5:27b")
 
     assert reused is None
 

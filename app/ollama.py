@@ -110,6 +110,7 @@ class OllamaClient:
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
+                "think": False,
                 "options": {
                     "temperature": temperature,
                     "top_p": top_p,

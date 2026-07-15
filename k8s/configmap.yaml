@@ -131,8 +131,8 @@ data:
   KLS_FEDERAL_CONGRESSES: "119"
   KLS_FEDERAL_SYNC_LIMIT: "40"
   KLS_REQUEST_TIMEOUT_SECONDS: "90"
-  KLS_OLLAMA_BASE_URL: http://ollama-router.ollama.svc.cluster.local:11434
-  KLS_OLLAMA_MODEL: qwen2.5:14b-instruct
+  KLS_OLLAMA_BASE_URL: http://ai-inference-ollama.ai-platform.svc.cluster.local:11434
+  KLS_OLLAMA_MODEL: qwen3.5:27b
   KLS_OLLAMA_TIMEOUT_SECONDS: "240"
   KLS_SYNC_PARALLELISM: "2"
   KLS_ANALYTICS_ENABLED: "true"
