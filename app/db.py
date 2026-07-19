@@ -1186,11 +1186,22 @@ def _query_bills(
             order_sql = "year DESC, COALESCE(last_action_date, '') DESC, bill_num ASC"
         elif tokens:
             token_clauses = []
+            searchable_columns = [
+                "bill_num",
+                "catch_title",
+                "bill_title",
+                "sponsor",
+                "status_label",
+                "status_explainer",
+                "bill_tags_json",
+                "interpretation_json",
+            ]
             for token in tokens[:6]:
-                token_clauses.append("LOWER(COALESCE(search_blob, '')) LIKE ?")
-                params.append(f"%{token}%")
+                for column in searchable_columns:
+                    token_clauses.append(f"LOWER(COALESCE({column}, '')) LIKE ?")
+                    params.append(f"%{token}%")
             clauses.append(f"({' OR '.join(token_clauses)})")
-            order_sql = "year DESC, COALESCE(last_action_date, '') DESC, bill_num ASC"
+            order_sql = ""
         else:
             order_sql = "year DESC, COALESCE(last_action_date, '') DESC, bill_num ASC"
 
@@ -1203,7 +1214,8 @@ def _query_bills(
         sql = f"SELECT {', '.join(columns)} FROM bills"
         if clauses:
             sql += f" WHERE {' AND '.join(clauses)}"
-        sql += f" ORDER BY {order_sql}"
+        if order_sql:
+            sql += f" ORDER BY {order_sql}"
         if limit is not None:
             candidate_limit = max(int(limit), 1)
             if tokens:
