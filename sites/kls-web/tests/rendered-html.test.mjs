@@ -42,11 +42,13 @@ test("server-renders the KLS home page", async () => {
 });
 
 test("contains product metadata and no starter or model details", async () => {
-  const [page, billPage, apiClient, layout, packageJson] = await Promise.all([
+  const [page, billPage, apiClient, layout, nextConfig, dockerfile, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/area/[slug]/bill/[year]/[billNum]/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/kls.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
@@ -58,6 +60,10 @@ test("contains product metadata and no starter or model details", async () => {
   assert.doesNotMatch(`${page}\n${billPage}\n${apiClient}`, /qwen|generator_model|interpretation_model/i);
   assert.match(layout, /Keeping Law Simple/);
   assert.doesNotMatch(layout, /codex-preview|_sites-preview|Starter Project/i);
+  assert.match(nextConfig, /output: "standalone"/);
+  assert.match(dockerfile, /CMD \["node", "server\.js"\]/);
+
+  await access(new URL("../dist/standalone/server.js", import.meta.url));
 
   await assert.rejects(
     access(new URL("app/_sites-preview/SkeletonPreview.tsx", templateRoot)),

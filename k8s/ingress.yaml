@@ -8,12 +8,8 @@ spec:
     - name: skazpro-public
       namespace: gateway-system
       sectionName: https-kls-root
-    - name: skazpro-public
-      namespace: gateway-system
-      sectionName: https-kls-www
   hostnames:
     - keepinglawsimple.org
-    - www.keepinglawsimple.org
   rules:
     - matches:
         - path:
@@ -21,4 +17,68 @@ spec:
             value: /
       backendRefs:
         - name: keeping-law-simple-web
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: keeping-law-simple-www
+  namespace: keeping-law-simple
+spec:
+  parentRefs:
+    - name: skazpro-public
+      namespace: gateway-system
+      sectionName: https-kls-www
+  hostnames:
+    - www.keepinglawsimple.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api
+        - path:
+            type: PathPrefix
+            value: /admin
+        - path:
+            type: PathPrefix
+            value: /states
+        - path:
+            type: PathPrefix
+            value: /federal
+        - path:
+            type: PathPrefix
+            value: /static
+        - path:
+            type: PathPrefix
+            value: /sitemaps
+        - path:
+            type: Exact
+            value: /sitemap.xml
+        - path:
+            type: Exact
+            value: /robots.txt
+        - path:
+            type: Exact
+            value: /healthz
+        - path:
+            type: Exact
+            value: /readyz
+        - path:
+            type: Exact
+            value: /metrics
+        - path:
+            type: Exact
+            value: /openapi.json
+        - path:
+            type: PathPrefix
+            value: /docs
+      backendRefs:
+        - name: keeping-law-simple-web
+          port: 80
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: keeping-law-simple-site
           port: 80

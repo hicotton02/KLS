@@ -14,3 +14,7 @@ npm test
 
 Set `KLS_API_BASE_URL` to use a non-production API. The default is
 `https://www.keepinglawsimple.org`.
+
+The ChatGPT Sites deployment is an owner-only preview and must never be made
+public. Production runs from `sites/kls-web/Dockerfile` in the KLS Kubernetes
+namespace and is routed through `k8s/ingress.yaml`.
