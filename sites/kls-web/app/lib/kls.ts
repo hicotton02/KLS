@@ -21,6 +21,7 @@ export type Jurisdiction = {
   description: string;
   source_name: string;
   source_url: string | null;
+  last_scanned_at: string | null;
   latest_year?: number | null;
   counts?: Counts;
   sync_status?: SyncStatus;
@@ -47,7 +48,6 @@ export type BillSummary = {
   updated_at: string | null;
   plain_language_title: string | null;
   summary: string | null;
-  interpretation_model: string | null;
   fact_check_status: string | null;
   tags: BillTag[];
   legacy_href: string;
@@ -55,7 +55,6 @@ export type BillSummary = {
 
 export type Overview = {
   site_name: string;
-  interpretation_model: string;
   jurisdictions: Jurisdiction[];
   recent_bills: BillSummary[];
 };
@@ -94,7 +93,6 @@ export type Interpretation = {
   fact_check_status?: string;
   fact_check_result?: string;
   fact_check_notes?: string[];
-  generator_model?: string;
 };
 
 export type BillDetailResponse = {
@@ -120,7 +118,6 @@ export type BillDetailResponse = {
     why_reviews: string[];
     evidence_items: string[];
   }>;
-  interpretation_model: string;
 };
 
 const API_BASE_URL = (process.env.KLS_API_BASE_URL ?? "https://www.keepinglawsimple.org").replace(/\/$/, "");
@@ -160,6 +157,7 @@ const FALLBACK_AREAS: Jurisdiction[] = [
     description: `Official ${name} legislation with plain-English summaries and source links.`,
     source_name: `${name} Legislature`,
     source_url: null,
+    last_scanned_at: null,
     latest_year: null,
     counts: EMPTY_COUNTS,
     sync_status: null,
@@ -174,6 +172,7 @@ const FALLBACK_AREAS: Jurisdiction[] = [
     description: "Recent federal bills from Congress with official text and plain-English summaries.",
     source_name: "Congress.gov",
     source_url: "https://www.congress.gov",
+    last_scanned_at: null,
     latest_year: null,
     counts: EMPTY_COUNTS,
     sync_status: null,
@@ -206,7 +205,6 @@ export async function getOverview(): Promise<Overview> {
   return (
     (await fetchKls<Overview>("/api/v1/overview")) ?? {
       site_name: "Keeping Law Simple",
-      interpretation_model: "qwen3.5:27b",
       jurisdictions: FALLBACK_AREAS,
       recent_bills: [],
     }
@@ -273,4 +271,24 @@ export async function getBillDetail(
 export function billHref(bill: BillSummary) {
   const query = bill.special_session === null ? "" : `?special_session=${bill.special_session}`;
   return `/area/${bill.area_slug}/bill/${bill.year}/${encodeURIComponent(bill.bill_num)}${query}`;
+}
+
+export function formatScanTimestamp(value: string | null | undefined, compact = false) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: compact ? undefined : "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "UTC",
+    timeZoneName: "short",
+  }).format(date);
+}
+
+export function lastScannedLabel(value: string | null | undefined, compact = false) {
+  const timestamp = formatScanTimestamp(value, compact);
+  return timestamp ? `Last scanned ${timestamp}` : "Not yet scanned";
 }

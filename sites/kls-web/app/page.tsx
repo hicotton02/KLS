@@ -3,7 +3,7 @@ import { ArrowRight, Landmark, ShieldCheck } from "lucide-react";
 import { BillList } from "./components/BillList";
 import { SearchBox } from "./components/SearchBox";
 import { StateDirectory } from "./components/StateDirectory";
-import { getOverview } from "./lib/kls";
+import { formatScanTimestamp, getOverview, lastScannedLabel } from "./lib/kls";
 
 export default async function Home() {
   const overview = await getOverview();
@@ -13,6 +13,11 @@ export default async function Home() {
     (total, area) => total + (area.counts?.total ?? 0),
     0,
   );
+  const latestScanAt = overview.jurisdictions.reduce<string | null>((latest, area) => {
+    if (!area.last_scanned_at) return latest;
+    if (!latest || Date.parse(area.last_scanned_at) > Date.parse(latest)) return area.last_scanned_at;
+    return latest;
+  }, null);
 
   return (
     <main>
@@ -38,8 +43,8 @@ export default async function Home() {
               <dd>{currentBills.toLocaleString()}</dd>
             </div>
             <div>
-              <dt>Interpretation</dt>
-              <dd className="model-name">Qwen 3.5 27B</dd>
+              <dt>Latest scan</dt>
+              <dd className="scan-time">{formatScanTimestamp(latestScanAt) ?? "Not yet scanned"}</dd>
             </div>
           </dl>
         </div>
@@ -53,6 +58,7 @@ export default async function Home() {
           <p className="eyebrow">Federal</p>
           <h2 id="federal-title">Congress, without the fog.</h2>
           <p>{federal?.description ?? "Recent federal bills, status, and source-checked summaries."}</p>
+          <p className="scan-note">{lastScannedLabel(federal?.last_scanned_at)}</p>
         </div>
         <Link className="text-link" href="/area/federal">
           Browse Congress <ArrowRight size={18} aria-hidden="true" />

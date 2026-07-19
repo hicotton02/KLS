@@ -43,7 +43,7 @@ spec:
             allowPrivilegeEscalation: false
       containers:
         - name: web
-          image: registry.skazproconsulting.com/keeping-law-simple/web:20260719f
+          image: registry.skazproconsulting.com/keeping-law-simple/web:20260719g
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000

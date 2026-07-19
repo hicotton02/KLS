@@ -35,14 +35,17 @@ test("server-renders the KLS home page", async () => {
   assert.match(html, /Bills, in plain English\./);
   assert.match(html, /Find your state/);
   assert.match(html, /Congress, without the fog\./);
+  assert.match(html, /Last scanned|Not yet scanned/);
   assert.match(html, /action="\/search"/);
   assert.match(html, /Official sources\. Neutral summaries\./);
   assert.doesNotMatch(html, /codex-preview|taking shape|react-loading-skeleton/i);
 });
 
-test("contains product metadata and no starter shell", async () => {
-  const [page, layout, packageJson] = await Promise.all([
+test("contains product metadata and no starter or model details", async () => {
+  const [page, billPage, apiClient, layout, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/area/[slug]/bill/[year]/[billNum]/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/kls.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
@@ -50,6 +53,9 @@ test("contains product metadata and no starter shell", async () => {
   assert.match(packageJson, /"name": "keeping-law-simple-sites"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton|starter/i);
   assert.match(page, /getOverview/);
+  assert.match(page, /Latest scan/);
+  assert.match(billPage, /Last scanned/);
+  assert.doesNotMatch(`${page}\n${billPage}\n${apiClient}`, /qwen|generator_model|interpretation_model/i);
   assert.match(layout, /Keeping Law Simple/);
   assert.doesNotMatch(layout, /codex-preview|_sites-preview|Starter Project/i);
 

@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { AlertTriangle, ArrowLeft, CalendarDays, CheckCircle2, ExternalLink, FileText, Scale } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CalendarDays, CheckCircle2, Clock3, ExternalLink, FileText } from "lucide-react";
 import { notFound } from "next/navigation";
-import { getBillDetail, type Interpretation } from "../../../../../lib/kls";
+import { formatScanTimestamp, getBillDetail, type Interpretation } from "../../../../../lib/kls";
 
 type RouteParams = Promise<{ slug: string; year: string; billNum: string }>;
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
@@ -47,9 +47,9 @@ export default async function BillPage({ params, searchParams }: { params: Route
           <h1>{data.bill.bill_num}</h1>
           <p className="bill-subtitle">{interpretation.plain_language_title || data.bill.catch_title || data.bill.bill_title}</p>
         </div>
-        <div className="model-stamp">
-          <Scale size={20} aria-hidden="true" />
-          <span><strong>Plain-English interpretation</strong><small>{interpretation.generator_model || data.interpretation_model}</small></span>
+        <div className="scan-stamp">
+          <Clock3 size={20} aria-hidden="true" />
+          <span><strong>Last scanned</strong><small>{formatScanTimestamp(data.jurisdiction.last_scanned_at) ?? "Not yet scanned"}</small></span>
         </div>
       </header>
 

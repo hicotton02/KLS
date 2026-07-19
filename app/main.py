@@ -813,9 +813,10 @@ def _jurisdiction_cards() -> list[dict[str, object]]:
         rollup = rollups.get(jurisdiction.state_code or "", {})
         latest_year = rollup.get("latest_year")
         counts = rollup.get("counts") or _empty_counts()
+        raw_sync_status = sync_statuses.get(jurisdiction.state_code or "")
         sync_status = _build_sync_status_view(
             jurisdiction,
-            sync_statuses.get(jurisdiction.state_code or ""),
+            raw_sync_status,
             latest_bill_refresh=rollup.get("latest_refresh"),
         )
         cards.append(
@@ -825,12 +826,23 @@ def _jurisdiction_cards() -> list[dict[str, object]]:
                 "latest_year": latest_year,
                 "counts": counts,
                 "sync_status": sync_status,
+                "last_scanned_at": _last_scanned_at(raw_sync_status),
             }
         )
     return cards
 
 
-def _jurisdiction_json(jurisdiction: Jurisdiction) -> dict[str, object]:
+def _last_scanned_at(sync_status: dict[str, object] | None) -> str | None:
+    if not sync_status:
+        return None
+    for field in ("last_success_at", "finished_at"):
+        value = sync_status.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _jurisdiction_json(jurisdiction: Jurisdiction, *, last_scanned_at: object = None) -> dict[str, object]:
     return {
         "slug": jurisdiction.slug,
         "name": jurisdiction.name,
@@ -841,6 +853,7 @@ def _jurisdiction_json(jurisdiction: Jurisdiction) -> dict[str, object]:
         "description": jurisdiction.description,
         "source_name": jurisdiction.source_name,
         "source_url": jurisdiction.source_url,
+        "last_scanned_at": last_scanned_at,
     }
 
 
@@ -868,16 +881,30 @@ def _bill_summary_json(jurisdiction: Jurisdiction, bill: dict[str, object]) -> d
         "updated_at": bill.get("updated_at"),
         "plain_language_title": interpretation.get("plain_language_title"),
         "summary": interpretation.get("one_sentence_summary"),
-        "interpretation_model": interpretation.get("generator_model"),
         "fact_check_status": interpretation.get("fact_check_status"),
         "tags": [{"value": tag, "label": tag_label(tag)} for tag in tags],
         "legacy_href": _bill_href(jurisdiction, bill),
     }
 
 
+PUBLIC_MODEL_METADATA_KEYS = {"generator_model", "interpretation_model", "model", "model_name"}
+
+
+def _strip_public_model_metadata(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _strip_public_model_metadata(item)
+            for key, item in value.items()
+            if str(key).casefold() not in PUBLIC_MODEL_METADATA_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_public_model_metadata(item) for item in value]
+    return value
+
+
 def _public_json_response(payload: dict[str, object], *, max_age: int = 60) -> JSONResponse:
     return JSONResponse(
-        content=payload,
+        content=_strip_public_model_metadata(payload),
         headers={
             "Access-Control-Allow-Origin": "*",
             "Cache-Control": f"public, max-age={max_age}, stale-while-revalidate={max_age * 4}",
@@ -903,9 +930,10 @@ def _state_page_context(
     )
     bills = [{**bill, "href": _bill_href(jurisdiction, bill)} for bill in bills]
     counts = get_dashboard_counts(jurisdiction.state_code or "", selected_year) if selected_year is not None else _empty_counts()
+    raw_sync_status = get_sync_status(jurisdiction.state_code or "")
     sync_status = _build_sync_status_view(
         jurisdiction,
-        get_sync_status(jurisdiction.state_code or ""),
+        raw_sync_status,
         latest_bill_refresh=get_latest_bill_refresh(jurisdiction.state_code or "") if jurisdiction.state_code else None,
     )
     return {
@@ -921,6 +949,7 @@ def _state_page_context(
         "counts": counts,
         "bills": bills,
         "sync_status": sync_status,
+        "last_scanned_at": _last_scanned_at(raw_sync_status),
         "latest_year": _latest_year(available_years),
         "page_href": jurisdiction_href(jurisdiction),
     }
@@ -1191,7 +1220,7 @@ def api_overview() -> JSONResponse:
             continue
         jurisdictions.append(
             {
-                **_jurisdiction_json(jurisdiction),
+                **_jurisdiction_json(jurisdiction, last_scanned_at=card["last_scanned_at"]),
                 "latest_year": card["latest_year"],
                 "counts": card["counts"],
                 "sync_status": card["sync_status"],
@@ -1208,7 +1237,6 @@ def api_overview() -> JSONResponse:
     return _public_json_response(
         {
             "site_name": settings.app_title,
-            "interpretation_model": settings.ollama_model,
             "jurisdictions": jurisdictions,
             "recent_bills": recent_bills,
         }
@@ -1236,7 +1264,10 @@ def api_area(
     ]
     return _public_json_response(
         {
-            "jurisdiction": _jurisdiction_json(jurisdiction),
+            "jurisdiction": _jurisdiction_json(
+                jurisdiction,
+                last_scanned_at=context["last_scanned_at"],
+            ),
             "available_years": context["available_years"],
             "available_tags": [
                 {"value": item, "label": tag_label(str(item))} for item in context["available_tags"]
@@ -1347,9 +1378,13 @@ def api_bill_detail(
                 }
             )
 
+    raw_sync_status = get_sync_status(jurisdiction.state_code or "")
     return _public_json_response(
         {
-            "jurisdiction": _jurisdiction_json(jurisdiction),
+            "jurisdiction": _jurisdiction_json(
+                jurisdiction,
+                last_scanned_at=_last_scanned_at(raw_sync_status),
+            ),
             "bill": {
                 **_bill_summary_json(jurisdiction, bill),
                 "status_explainer": bill.get("status_explainer"),
@@ -1365,7 +1400,6 @@ def api_bill_detail(
             "actions": actions,
             "amendments": amendments,
             "relationships": relationships,
-            "interpretation_model": settings.ollama_model,
         },
         max_age=60,
     )

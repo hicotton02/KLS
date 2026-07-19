@@ -6,6 +6,16 @@ from app.jurisdictions import get_state_jurisdiction
 from app.main import _collapse_related_relationships, app
 
 
+def _assert_no_public_model_metadata(value: object) -> None:
+    if isinstance(value, dict):
+        assert not ({"generator_model", "interpretation_model", "model", "model_name"} & value.keys())
+        for item in value.values():
+            _assert_no_public_model_metadata(item)
+    elif isinstance(value, list):
+        for item in value:
+            _assert_no_public_model_metadata(item)
+
+
 def _seed_federal_bill() -> None:
     upsert_bill(
         {
@@ -111,6 +121,7 @@ def _seed_state_bill(
                 "who_it_affects": ["People named in the bill."],
                 "terms_to_know": [],
                 "limits_and_unknowns": [],
+                "generator_model": "internal-test-model",
             },
             "bill_tags_json": tags or [],
             "search_blob": search_blob or f"{bill_num} {catch_title} {sponsor} {' '.join(tags or [])}",
@@ -248,8 +259,14 @@ def test_home_lists_jurisdiction_pages() -> None:
     assert response.text.index("Open Federal") > positions[-1]
 
 
-def test_public_api_exposes_coverage_and_interpretation_model() -> None:
+def test_public_api_exposes_coverage_and_last_scan_without_model_metadata() -> None:
     init_db()
+    update_sync_status(
+        "wy",
+        is_running=False,
+        finished_at="2026-07-19T15:42:00+00:00",
+        last_success_at="2026-07-19T15:42:00+00:00",
+    )
     client = TestClient(app)
 
     response = client.get("/api/v1/overview")
@@ -257,14 +274,21 @@ def test_public_api_exposes_coverage_and_interpretation_model() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["site_name"] == "Keeping Law Simple"
-    assert payload["interpretation_model"] == "qwen3.5:27b"
-    assert any(item["slug"] == "wyoming" for item in payload["jurisdictions"])
+    wyoming = next(item for item in payload["jurisdictions"] if item["slug"] == "wyoming")
+    assert wyoming["last_scanned_at"] == "2026-07-19T15:42:00+00:00"
+    _assert_no_public_model_metadata(payload)
     assert response.headers["access-control-allow-origin"] == "*"
 
 
 def test_public_api_search_area_and_bill_detail() -> None:
     init_db()
     _seed_state_bill("HB2098", "Modern navigation test", year=2098, tags=["education"])
+    update_sync_status(
+        "wy",
+        is_running=False,
+        finished_at="2026-07-19T16:05:00+00:00",
+        last_success_at="2026-07-19T16:05:00+00:00",
+    )
     client = TestClient(app)
 
     search_response = client.get("/api/v1/search", params={"q": "Modern navigation", "area": "wy"})
@@ -275,11 +299,16 @@ def test_public_api_search_area_and_bill_detail() -> None:
     assert search_response.json()["results"][0]["bill_num"] == "HB2098"
     assert area_response.status_code == 200
     assert area_response.json()["bills"][0]["summary"] == "Modern navigation test summary."
+    assert area_response.json()["jurisdiction"]["last_scanned_at"] == "2026-07-19T16:05:00+00:00"
     assert detail_response.status_code == 200
     detail = detail_response.json()
     assert detail["bill"]["catch_title"] == "Modern navigation test"
     assert detail["interpretation"]["one_sentence_summary"] == "Modern navigation test summary."
     assert detail["bill"]["tags"][0] == {"value": "education", "label": "Education"}
+    assert detail["jurisdiction"]["last_scanned_at"] == "2026-07-19T16:05:00+00:00"
+    _assert_no_public_model_metadata(search_response.json())
+    _assert_no_public_model_metadata(area_response.json())
+    _assert_no_public_model_metadata(detail)
 
 
 def test_home_shows_compact_sync_status() -> None:
@@ -674,6 +703,7 @@ def test_bill_detail_shows_tags_and_amendments() -> None:
                     "one_sentence_summary": "This amendment adds a business exception to the bill.",
                     "changes": ["It adds a new exception for some small businesses."],
                     "limits_and_unknowns": [],
+                    "generator_model": "internal-test-model",
                 },
                 "source_hash": "hb0400-h2001",
                 "source_synced_at": "2098-01-11T00:00:00+00:00",
@@ -691,6 +721,10 @@ def test_bill_detail_shows_tags_and_amendments() -> None:
     assert "Small Business" in response.text
     assert "HB0400H2001" in response.text
     assert "This amendment adds a business exception to the bill." in response.text
+
+    api_response = client.get("/api/v1/areas/wyoming/bills/2098/HB0400")
+    assert api_response.status_code == 200
+    _assert_no_public_model_metadata(api_response.json())
 
 
 def test_state_archive_note_and_tag_filter_render() -> None:

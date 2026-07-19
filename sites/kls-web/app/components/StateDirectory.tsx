@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { ArrowRight, Search } from "lucide-react";
 import { useMemo, useState } from "react";
-import type { Jurisdiction } from "../lib/kls";
+import { lastScannedLabel, type Jurisdiction } from "../lib/kls";
 
 export function StateDirectory({ areas }: { areas: Jurisdiction[] }) {
   const [query, setQuery] = useState("");
@@ -25,7 +25,7 @@ export function StateDirectory({ areas }: { areas: Jurisdiction[] }) {
           <Link className="state-link" href={`/area/${area.slug}`} key={area.slug}>
             <span>
               <strong>{area.name}</strong>
-              <small>{area.counts?.total ? `${area.counts.total.toLocaleString()} bills` : "View coverage"}</small>
+              <small>{lastScannedLabel(area.last_scanned_at, true)}</small>
             </span>
             <ArrowRight size={17} aria-hidden="true" />
           </Link>
