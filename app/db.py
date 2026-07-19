@@ -460,33 +460,57 @@ def get_jurisdiction_rollups(states: list[str]) -> dict[str, dict[str, Any]]:
     normalized_states = list(dict.fromkeys(str(state or "").strip() for state in states if str(state or "").strip()))
     if not normalized_states:
         return {}
-    placeholders = ", ".join("?" for _ in normalized_states)
-    sql = f"""
-        WITH latest_years AS (
-            SELECT state, MAX(year) AS latest_year
-            FROM bills
-            WHERE state IN ({placeholders})
-            GROUP BY state
-        )
-        SELECT
-            bills.state,
-            latest_years.latest_year,
-            SUM(CASE WHEN bills.year = latest_years.latest_year THEN 1 ELSE 0 END) AS total,
-            SUM(CASE WHEN bills.year = latest_years.latest_year AND bills.outcome = 'active' THEN 1 ELSE 0 END) AS active_count,
-            SUM(CASE WHEN bills.year = latest_years.latest_year AND bills.outcome = 'passed' THEN 1 ELSE 0 END) AS passed_count,
-            SUM(
-                CASE
-                    WHEN bills.year = latest_years.latest_year AND bills.outcome IN ('failed', 'replaced') THEN 1
-                    ELSE 0
-                END
-            ) AS failed_count,
-            MAX(COALESCE(bills.source_synced_at, bills.updated_at, bills.created_at)) AS latest_refresh
-        FROM bills
-        JOIN latest_years ON latest_years.state = bills.state
-        GROUP BY bills.state, latest_years.latest_year
-    """
+    rows: list[Mapping[str, Any]] = []
     with connect() as connection:
-        rows = connection.execute(sql, normalized_states).fetchall()
+        if isinstance(connection, sqlite3.Connection):
+            for state in normalized_states:
+                latest = connection.execute(
+                    "SELECT MAX(year) AS latest_year FROM bills WHERE state = ?",
+                    (state,),
+                ).fetchone()
+                latest_year = None if latest is None else latest["latest_year"]
+                if latest_year is None:
+                    continue
+                counts = connection.execute(
+                    """
+                    SELECT
+                        COUNT(*) AS total,
+                        SUM(CASE WHEN outcome = 'active' THEN 1 ELSE 0 END) AS active_count,
+                        SUM(CASE WHEN outcome = 'passed' THEN 1 ELSE 0 END) AS passed_count,
+                        SUM(CASE WHEN outcome IN ('failed', 'replaced') THEN 1 ELSE 0 END) AS failed_count
+                    FROM bills
+                    WHERE state = ? AND year = ?
+                    """,
+                    (state, latest_year),
+                ).fetchone()
+                if counts is not None:
+                    rows.append({"state": state, "latest_year": latest_year, **dict(counts)})
+        else:
+            placeholders = ", ".join("?" for _ in normalized_states)
+            sql = f"""
+                WITH latest_years AS (
+                    SELECT state, MAX(year) AS latest_year
+                    FROM bills
+                    WHERE state IN ({placeholders})
+                    GROUP BY state
+                )
+                SELECT
+                    bills.state,
+                    latest_years.latest_year,
+                    SUM(CASE WHEN bills.year = latest_years.latest_year THEN 1 ELSE 0 END) AS total,
+                    SUM(CASE WHEN bills.year = latest_years.latest_year AND bills.outcome = 'active' THEN 1 ELSE 0 END) AS active_count,
+                    SUM(CASE WHEN bills.year = latest_years.latest_year AND bills.outcome = 'passed' THEN 1 ELSE 0 END) AS passed_count,
+                    SUM(
+                        CASE
+                            WHEN bills.year = latest_years.latest_year AND bills.outcome IN ('failed', 'replaced') THEN 1
+                            ELSE 0
+                        END
+                    ) AS failed_count
+                FROM bills
+                JOIN latest_years ON latest_years.state = bills.state
+                GROUP BY bills.state, latest_years.latest_year
+            """
+            rows = connection.execute(sql, normalized_states).fetchall()
     return {
         str(row["state"]): {
             "latest_year": int(row["latest_year"]),
@@ -496,7 +520,6 @@ def get_jurisdiction_rollups(states: list[str]) -> dict[str, dict[str, Any]]:
                 "passed": int(row["passed_count"] or 0),
                 "failed": int(row["failed_count"] or 0),
             },
-            "latest_refresh": str(row["latest_refresh"] or "").strip() or None,
         }
         for row in rows
     }

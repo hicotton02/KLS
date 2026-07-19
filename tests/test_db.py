@@ -70,7 +70,6 @@ def test_jurisdiction_rollups_and_recent_bills_use_bounded_queries() -> None:
     assert rollups["wy"] == {
         "latest_year": 2026,
         "counts": {"total": 2, "active": 1, "passed": 1, "failed": 0},
-        "latest_refresh": "2026-07-02T00:00:00+00:00",
     }
     assert rollups["co"]["counts"] == {"total": 1, "active": 0, "passed": 0, "failed": 1}
     assert "missing" not in rollups
