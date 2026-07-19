@@ -826,6 +826,61 @@ def _jurisdiction_cards() -> list[dict[str, object]]:
     return cards
 
 
+def _jurisdiction_json(jurisdiction: Jurisdiction) -> dict[str, object]:
+    return {
+        "slug": jurisdiction.slug,
+        "name": jurisdiction.name,
+        "kind": jurisdiction.kind,
+        "state_code": jurisdiction.state_code,
+        "coverage_status": jurisdiction.coverage_status,
+        "coverage_note": jurisdiction.coverage_note,
+        "description": jurisdiction.description,
+        "source_name": jurisdiction.source_name,
+        "source_url": jurisdiction.source_url,
+    }
+
+
+def _bill_summary_json(jurisdiction: Jurisdiction, bill: dict[str, object]) -> dict[str, object]:
+    interpretation = bill.get("interpretation_json")
+    if not isinstance(interpretation, dict):
+        interpretation = {}
+    tags = [str(item or "").strip() for item in bill.get("bill_tags_json") or [] if str(item or "").strip()]
+    return {
+        "area_slug": jurisdiction.slug,
+        "area_name": jurisdiction.name,
+        "area_kind": jurisdiction.kind,
+        "state_code": jurisdiction.state_code,
+        "year": bill.get("year"),
+        "special_session": bill.get("special_session_value"),
+        "bill_num": bill.get("bill_num"),
+        "catch_title": bill.get("catch_title"),
+        "bill_title": bill.get("bill_title"),
+        "sponsor": bill.get("sponsor"),
+        "status_label": bill.get("status_label"),
+        "status_explainer": bill.get("status_explainer"),
+        "outcome": bill.get("outcome"),
+        "last_action": bill.get("last_action"),
+        "last_action_date": bill.get("last_action_date"),
+        "updated_at": bill.get("updated_at"),
+        "plain_language_title": interpretation.get("plain_language_title"),
+        "summary": interpretation.get("one_sentence_summary"),
+        "interpretation_model": interpretation.get("generator_model"),
+        "fact_check_status": interpretation.get("fact_check_status"),
+        "tags": [{"value": tag, "label": tag_label(tag)} for tag in tags],
+        "legacy_href": _bill_href(jurisdiction, bill),
+    }
+
+
+def _public_json_response(payload: dict[str, object], *, max_age: int = 60) -> JSONResponse:
+    return JSONResponse(
+        content=payload,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": f"public, max-age={max_age}, stale-while-revalidate={max_age * 4}",
+        },
+    )
+
+
 def _state_page_context(
     request: Request,
     jurisdiction: Jurisdiction,
@@ -1121,6 +1176,195 @@ def readyz() -> JSONResponse:
     if years:
         total = get_dashboard_counts("wy", years[0])["total"]
     return JSONResponse({"status": "ok", "years": years, "latest_year_total": total})
+
+
+@app.get("/api/v1/overview")
+def api_overview() -> JSONResponse:
+    jurisdictions = []
+    for card in _jurisdiction_cards():
+        jurisdiction = card["jurisdiction"]
+        if not isinstance(jurisdiction, Jurisdiction):
+            continue
+        jurisdictions.append(
+            {
+                **_jurisdiction_json(jurisdiction),
+                "latest_year": card["latest_year"],
+                "counts": card["counts"],
+                "sync_status": card["sync_status"],
+                "legacy_href": card["href"],
+            }
+        )
+
+    recent_bills = []
+    for bill in search_bills(limit=8):
+        jurisdiction = get_jurisdiction_by_state_code(str(bill.get("state") or ""))
+        if jurisdiction is not None:
+            recent_bills.append(_bill_summary_json(jurisdiction, bill))
+
+    return _public_json_response(
+        {
+            "site_name": settings.app_title,
+            "interpretation_model": settings.ollama_model,
+            "jurisdictions": jurisdictions,
+            "recent_bills": recent_bills,
+        }
+    )
+
+
+@app.get("/api/v1/areas/{area_slug}")
+def api_area(
+    request: Request,
+    area_slug: str,
+    year: int | None = Query(default=None),
+    q: str = Query(default=""),
+    status: str = Query(default="all"),
+    tag: str = Query(default=""),
+    limit: int = Query(default=60, ge=1, le=100),
+) -> JSONResponse:
+    jurisdiction = get_jurisdiction(area_slug)
+    if jurisdiction is None or jurisdiction.coverage_status != "live":
+        raise HTTPException(status_code=404, detail="Coverage area not found")
+    context = _state_page_context(request, jurisdiction, year, q, status, tag)
+    bills = [
+        _bill_summary_json(jurisdiction, bill)
+        for bill in list(context["bills"])[:limit]
+        if isinstance(bill, dict)
+    ]
+    return _public_json_response(
+        {
+            "jurisdiction": _jurisdiction_json(jurisdiction),
+            "available_years": context["available_years"],
+            "available_tags": [
+                {"value": item, "label": tag_label(str(item))} for item in context["available_tags"]
+            ],
+            "selected_year": context["selected_year"],
+            "query": q,
+            "status": status,
+            "tag": tag,
+            "counts": context["counts"],
+            "sync_status": context["sync_status"],
+            "bills": bills,
+        },
+        max_age=30,
+    )
+
+
+@app.get("/api/v1/search")
+def api_search(
+    q: str = Query(default=""),
+    area: str = Query(default="all"),
+    year: int | None = Query(default=None),
+    status: str = Query(default="all"),
+    tag: str = Query(default=""),
+    limit: int = Query(default=60, ge=1, le=100),
+) -> JSONResponse:
+    state_filter = None if area == "all" else area
+    results = []
+    if q.strip() or tag.strip() or year is not None or status != "all" or area != "all":
+        for bill in search_bills(q, state=state_filter, year=year, status=status, tag=tag, limit=limit):
+            jurisdiction = get_jurisdiction_by_state_code(str(bill.get("state") or ""))
+            if jurisdiction is not None:
+                results.append(_bill_summary_json(jurisdiction, bill))
+    areas = [
+        {"value": jurisdiction.state_code or "", "slug": jurisdiction.slug, "label": jurisdiction.name}
+        for jurisdiction in list_jurisdictions()
+        if jurisdiction.state_code
+    ]
+    return _public_json_response(
+        {
+            "query": q,
+            "area": area,
+            "year": year,
+            "status": status,
+            "tag": tag,
+            "areas": areas,
+            "available_tags": [
+                {"value": item, "label": tag_label(item)} for item in list_available_tags(state_filter, year)
+            ],
+            "results": results,
+        },
+        max_age=30,
+    )
+
+
+@app.get("/api/v1/areas/{area_slug}/bills/{year}/{bill_num}")
+def api_bill_detail(
+    area_slug: str,
+    year: int,
+    bill_num: str,
+    special_session: int | None = Query(default=None),
+) -> JSONResponse:
+    jurisdiction = get_jurisdiction(area_slug)
+    if jurisdiction is None or jurisdiction.coverage_status != "live":
+        raise HTTPException(status_code=404, detail="Coverage area not found")
+    bill = get_bill(jurisdiction.state_code or "", year, bill_num, special_session_value=special_session)
+    if bill is None:
+        raise HTTPException(status_code=404, detail="Bill not found")
+
+    interpretation = bill.get("interpretation_json")
+    if not isinstance(interpretation, dict):
+        interpretation = {}
+    actions = bill.get("bill_actions_json") or []
+    actions = sorted(actions, key=lambda item: item.get("statusDate", ""), reverse=True)
+    amendments = list_bill_amendments(
+        jurisdiction.state_code or "",
+        year,
+        bill_num,
+        special_session_value=special_session,
+    )
+    relationships = []
+    if jurisdiction.kind == "state":
+        raw_relationships = get_bill_relationships_for_bill(
+            jurisdiction.state_code or "",
+            year,
+            bill_num,
+            special_session_value=special_session,
+            limit=6,
+        )
+        for relationship in _collapse_related_relationships(
+            jurisdiction,
+            year,
+            bill_num,
+            special_session,
+            raw_relationships,
+        ):
+            peer = relationship.get("peer")
+            if not isinstance(peer, dict):
+                continue
+            relationships.append(
+                {
+                    "peer": _bill_summary_json(jurisdiction, peer),
+                    "relationship_strength": relationship.get("relationship_strength"),
+                    "needs_human_review": relationship.get("needs_human_review"),
+                    "pair_summaries": relationship.get("pair_summaries"),
+                    "combined_effects": relationship.get("combined_effects"),
+                    "why_reviews": relationship.get("why_reviews"),
+                    "evidence_items": relationship.get("evidence_items"),
+                }
+            )
+
+    return _public_json_response(
+        {
+            "jurisdiction": _jurisdiction_json(jurisdiction),
+            "bill": {
+                **_bill_summary_json(jurisdiction, bill),
+                "status_explainer": bill.get("status_explainer"),
+                "signed_date": bill.get("signed_date"),
+                "effective_date": bill.get("effective_date"),
+                "chapter_no": bill.get("chapter_no"),
+                "enrolled_no": bill.get("enrolled_no"),
+                "official_summary_text": bill.get("official_summary_text"),
+                "official_digest_text": bill.get("official_digest_text"),
+            },
+            "interpretation": interpretation,
+            "official_links": _official_links_for_bill(jurisdiction, bill),
+            "actions": actions,
+            "amendments": amendments,
+            "relationships": relationships,
+            "interpretation_model": settings.ollama_model,
+        },
+        max_age=60,
+    )
 
 
 @app.get("/robots.txt")

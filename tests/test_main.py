@@ -248,6 +248,40 @@ def test_home_lists_jurisdiction_pages() -> None:
     assert response.text.index("Open Federal") > positions[-1]
 
 
+def test_public_api_exposes_coverage_and_interpretation_model() -> None:
+    init_db()
+    client = TestClient(app)
+
+    response = client.get("/api/v1/overview")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["site_name"] == "Keeping Law Simple"
+    assert payload["interpretation_model"] == "qwen3.5:27b"
+    assert any(item["slug"] == "wyoming" for item in payload["jurisdictions"])
+    assert response.headers["access-control-allow-origin"] == "*"
+
+
+def test_public_api_search_area_and_bill_detail() -> None:
+    init_db()
+    _seed_state_bill("HB2098", "Modern navigation test", year=2098, tags=["education"])
+    client = TestClient(app)
+
+    search_response = client.get("/api/v1/search", params={"q": "Modern navigation", "area": "wy"})
+    area_response = client.get("/api/v1/areas/wyoming", params={"year": 2098, "limit": 10})
+    detail_response = client.get("/api/v1/areas/wyoming/bills/2098/HB2098")
+
+    assert search_response.status_code == 200
+    assert search_response.json()["results"][0]["bill_num"] == "HB2098"
+    assert area_response.status_code == 200
+    assert area_response.json()["bills"][0]["summary"] == "Modern navigation test summary."
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["bill"]["catch_title"] == "Modern navigation test"
+    assert detail["interpretation"]["one_sentence_summary"] == "Modern navigation test summary."
+    assert detail["bill"]["tags"][0] == {"value": "education", "label": "Education"}
+
+
 def test_home_shows_compact_sync_status() -> None:
     init_db()
     update_sync_status(
