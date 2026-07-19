@@ -27,6 +27,7 @@ from app.analytics import (
 from app.db import (
     get_bill,
     get_analytics_overview,
+    get_jurisdiction_rollups,
     list_available_tags,
     list_bill_amendments,
     get_bill_relationships_for_bill,
@@ -35,6 +36,7 @@ from app.db import (
     get_sync_status,
     init_db,
     list_bills,
+    list_recent_bills,
     list_sync_statuses,
     search_bills,
     list_years,
@@ -804,15 +806,17 @@ def _sitemap_index_entries() -> list[tuple[str, str | None]]:
 def _jurisdiction_cards() -> list[dict[str, object]]:
     cards: list[dict[str, object]] = []
     jurisdictions = list_jurisdictions()
-    sync_statuses = list_sync_statuses([jurisdiction.state_code for jurisdiction in jurisdictions if jurisdiction.state_code])
+    state_codes = [jurisdiction.state_code for jurisdiction in jurisdictions if jurisdiction.state_code]
+    sync_statuses = list_sync_statuses(state_codes)
+    rollups = get_jurisdiction_rollups(state_codes)
     for jurisdiction in jurisdictions:
-        years = list_years(jurisdiction.state_code) if jurisdiction.state_code else []
-        latest_year = years[0] if years else None
-        counts = get_dashboard_counts(jurisdiction.state_code, latest_year) if jurisdiction.state_code and latest_year is not None else _empty_counts()
+        rollup = rollups.get(jurisdiction.state_code or "", {})
+        latest_year = rollup.get("latest_year")
+        counts = rollup.get("counts") or _empty_counts()
         sync_status = _build_sync_status_view(
             jurisdiction,
             sync_statuses.get(jurisdiction.state_code or ""),
-            latest_bill_refresh=get_latest_bill_refresh(jurisdiction.state_code or "") if jurisdiction.state_code else None,
+            latest_bill_refresh=rollup.get("latest_refresh"),
         )
         cards.append(
             {
@@ -1196,7 +1200,7 @@ def api_overview() -> JSONResponse:
         )
 
     recent_bills = []
-    for bill in search_bills(limit=8):
+    for bill in list_recent_bills(limit=8):
         jurisdiction = get_jurisdiction_by_state_code(str(bill.get("state") or ""))
         if jurisdiction is not None:
             recent_bills.append(_bill_summary_json(jurisdiction, bill))

@@ -456,6 +456,52 @@ def list_years(state: str = "wy") -> list[int]:
     return [int(row["year"]) for row in rows]
 
 
+def get_jurisdiction_rollups(states: list[str]) -> dict[str, dict[str, Any]]:
+    normalized_states = list(dict.fromkeys(str(state or "").strip() for state in states if str(state or "").strip()))
+    if not normalized_states:
+        return {}
+    placeholders = ", ".join("?" for _ in normalized_states)
+    sql = f"""
+        WITH latest_years AS (
+            SELECT state, MAX(year) AS latest_year
+            FROM bills
+            WHERE state IN ({placeholders})
+            GROUP BY state
+        )
+        SELECT
+            bills.state,
+            latest_years.latest_year,
+            SUM(CASE WHEN bills.year = latest_years.latest_year THEN 1 ELSE 0 END) AS total,
+            SUM(CASE WHEN bills.year = latest_years.latest_year AND bills.outcome = 'active' THEN 1 ELSE 0 END) AS active_count,
+            SUM(CASE WHEN bills.year = latest_years.latest_year AND bills.outcome = 'passed' THEN 1 ELSE 0 END) AS passed_count,
+            SUM(
+                CASE
+                    WHEN bills.year = latest_years.latest_year AND bills.outcome IN ('failed', 'replaced') THEN 1
+                    ELSE 0
+                END
+            ) AS failed_count,
+            MAX(COALESCE(bills.source_synced_at, bills.updated_at, bills.created_at)) AS latest_refresh
+        FROM bills
+        JOIN latest_years ON latest_years.state = bills.state
+        GROUP BY bills.state, latest_years.latest_year
+    """
+    with connect() as connection:
+        rows = connection.execute(sql, normalized_states).fetchall()
+    return {
+        str(row["state"]): {
+            "latest_year": int(row["latest_year"]),
+            "counts": {
+                "total": int(row["total"] or 0),
+                "active": int(row["active_count"] or 0),
+                "passed": int(row["passed_count"] or 0),
+                "failed": int(row["failed_count"] or 0),
+            },
+            "latest_refresh": str(row["latest_refresh"] or "").strip() or None,
+        }
+        for row in rows
+    }
+
+
 def list_available_tags(state: str | None = None, year: int | None = None) -> list[str]:
     clauses: list[str] = []
     params: list[Any] = []
@@ -511,6 +557,19 @@ def search_bills(
 ) -> list[dict[str, Any]]:
     bills = _query_bills(state=state, year=year, status=status, query=query, include_search_blob=bool(query.strip()))
     return _filter_bill_results(bills, query=query, tag=tag, limit=limit)
+
+
+def list_recent_bills(limit: int = 8) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(int(limit), 100))
+    sql = f"""
+        SELECT {', '.join(BILL_LIST_COLUMNS)}
+        FROM bills
+        ORDER BY last_action_date DESC, updated_at DESC, year DESC, bill_num ASC
+        LIMIT ?
+    """
+    with connect() as connection:
+        rows = connection.execute(sql, (safe_limit,)).fetchall()
+    return [_parse_row(row) for row in rows if row is not None]
 
 
 def get_bill(state: str, year: int, bill_num: str, special_session_value: int | None = None) -> dict[str, Any] | None:
