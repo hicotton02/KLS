@@ -1210,7 +1210,7 @@ def _query_bills(
             clauses.append("LOWER(COALESCE(bill_tags_json, '')) LIKE ?")
             params.append(f'%"{normalized_tag}"%')
 
-        columns = BILL_SEARCH_COLUMNS if include_search_blob else BILL_LIST_COLUMNS
+        columns = BILL_SEARCH_COLUMNS if include_search_blob and not tokens else BILL_LIST_COLUMNS
         sql = f"SELECT {', '.join(columns)} FROM bills"
         if clauses:
             sql += f" WHERE {' AND '.join(clauses)}"
