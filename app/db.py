@@ -224,6 +224,19 @@ BILL_LIST_COLUMNS = [
     "updated_at",
 ]
 BILL_SEARCH_COLUMNS = [*BILL_LIST_COLUMNS, "search_blob"]
+POSTGRES_BILL_SEARCH_VECTOR_SQL = """
+to_tsvector(
+    'simple',
+    COALESCE(bill_num, '') || ' ' ||
+    COALESCE(catch_title, '') || ' ' ||
+    COALESCE(bill_title, '') || ' ' ||
+    COALESCE(sponsor, '') || ' ' ||
+    COALESCE(status_label, '') || ' ' ||
+    COALESCE(status_explainer, '') || ' ' ||
+    COALESCE(bill_tags_json, '') || ' ' ||
+    COALESCE(interpretation_json, '')
+)
+""".strip()
 
 
 def normalize_special_session(value: int | None) -> int:
@@ -366,6 +379,7 @@ def init_db() -> None:
     with connect() as connection:
         connection.executescript(SCHEMA)
         _ensure_bill_columns(connection)
+        _ensure_bill_search_index(connection)
         _ensure_page_view_columns(connection)
         _ensure_sync_status_columns(connection)
         connection.commit()
@@ -376,6 +390,16 @@ def _ensure_bill_columns(connection: sqlite3.Connection) -> None:
     for column, definition in BILL_COLUMN_DEFINITIONS.items():
         if column not in existing_columns:
             connection.execute(f"ALTER TABLE bills ADD COLUMN {column} {definition}")
+
+
+def _ensure_bill_search_index(connection: sqlite3.Connection | PostgresConnection) -> None:
+    if isinstance(connection, PostgresConnection):
+        connection.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_bills_search_vector
+            ON bills USING GIN ({POSTGRES_BILL_SEARCH_VECTOR_SQL})
+            """
+        )
 
 
 def _ensure_page_view_columns(connection: sqlite3.Connection) -> None:
@@ -565,7 +589,15 @@ def list_bills(
     tag: str = "",
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    bills = _query_bills(state=state, year=year, status=status, query=query, include_search_blob=bool(query.strip()))
+    bills = _query_bills(
+        state=state,
+        year=year,
+        status=status,
+        query=query,
+        tag=tag,
+        include_search_blob=bool(query.strip()),
+        limit=limit,
+    )
     return _filter_bill_results(bills, query=query, tag=tag, limit=limit)
 
 
@@ -578,7 +610,15 @@ def search_bills(
     tag: str = "",
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    bills = _query_bills(state=state, year=year, status=status, query=query, include_search_blob=bool(query.strip()))
+    bills = _query_bills(
+        state=state,
+        year=year,
+        status=status,
+        query=query,
+        tag=tag,
+        include_search_blob=bool(query.strip()),
+        limit=limit,
+    )
     return _filter_bill_results(bills, query=query, tag=tag, limit=limit)
 
 
@@ -1117,7 +1157,9 @@ def _query_bills(
     year: int | None = None,
     status: str = "all",
     query: str = "",
+    tag: str = "",
     include_search_blob: bool = False,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     clauses: list[str] = []
     params: list[Any] = []
@@ -1133,32 +1175,41 @@ def _query_bills(
         else:
             clauses.append("outcome = ?")
             params.append(status)
-    tokens = _search_tokens(query)
-    if tokens:
-        token_clauses: list[str] = []
-        searchable_columns = [
-            "bill_num",
-            "catch_title",
-            "bill_title",
-            "sponsor",
-            "status_label",
-            "status_explainer",
-            "search_blob",
-        ]
-        for token in tokens[:6]:
-            pattern = f"%{token}%"
-            for column in searchable_columns:
-                token_clauses.append(f"LOWER(COALESCE({column}, '')) LIKE ?")
-                params.append(pattern)
-        clauses.append(f"({' OR '.join(token_clauses)})")
-
-    columns = BILL_SEARCH_COLUMNS if include_search_blob else BILL_LIST_COLUMNS
-    sql = f"SELECT {', '.join(columns)} FROM bills"
-    if clauses:
-        sql += f" WHERE {' AND '.join(clauses)}"
-    sql += " ORDER BY year DESC, COALESCE(last_action_date, '') DESC, bill_num ASC"
-
     with connect() as connection:
+        tokens = _search_tokens(query)
+        if tokens and isinstance(connection, PostgresConnection):
+            full_text_query = " OR ".join(f'"{token}"' for token in tokens[:6])
+            clauses.append(
+                f"{POSTGRES_BILL_SEARCH_VECTOR_SQL} @@ websearch_to_tsquery('simple', ?)"
+            )
+            params.append(full_text_query)
+            order_sql = "year DESC, COALESCE(last_action_date, '') DESC, bill_num ASC"
+        elif tokens:
+            token_clauses = []
+            for token in tokens[:6]:
+                token_clauses.append("LOWER(COALESCE(search_blob, '')) LIKE ?")
+                params.append(f"%{token}%")
+            clauses.append(f"({' OR '.join(token_clauses)})")
+            order_sql = "year DESC, COALESCE(last_action_date, '') DESC, bill_num ASC"
+        else:
+            order_sql = "year DESC, COALESCE(last_action_date, '') DESC, bill_num ASC"
+
+        normalized_tag = str(tag or "").strip().lower()
+        if normalized_tag:
+            clauses.append("LOWER(COALESCE(bill_tags_json, '')) LIKE ?")
+            params.append(f'%"{normalized_tag}"%')
+
+        columns = BILL_SEARCH_COLUMNS if include_search_blob else BILL_LIST_COLUMNS
+        sql = f"SELECT {', '.join(columns)} FROM bills"
+        if clauses:
+            sql += f" WHERE {' AND '.join(clauses)}"
+        sql += f" ORDER BY {order_sql}"
+        if limit is not None:
+            candidate_limit = max(int(limit), 1)
+            if tokens:
+                candidate_limit = min(max(candidate_limit * 5, 100), 500)
+            sql += " LIMIT ?"
+            params.append(candidate_limit)
         rows = connection.execute(sql, params).fetchall()
     return [_parse_row(row) for row in rows if row is not None]
 
