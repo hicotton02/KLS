@@ -1,3 +1,5 @@
+from collections import Counter
+
 from app.voting import build_wyoming_roll_calls
 from app.wyoming_api import WyomingApiClient
 
@@ -195,3 +197,47 @@ def test_normalize_historical_legislator_name() -> None:
         "party": None,
         "district": "H15",
     }
+
+
+def test_build_wyoming_roll_calls_reconciles_concatenated_vote_snapshots() -> None:
+    roster = [
+        {
+            "firstName": name,
+            "lastName": name,
+            "name": name,
+            "legID": index,
+            "district": f"S{index:02d}",
+        }
+        for index, name in enumerate(("Able", "Baker", "Clark", "Dover", "Ellis"), start=1)
+    ]
+    detail = {
+        "year": 2020,
+        "bill": "SF0010",
+        "rollCalls": [
+            {
+                "voteID": 114,
+                "chamber": "S",
+                "voteDate": "2020-02-10T15:58:18",
+                "yesVotesCount": 3,
+                "yesVotes": "Able, Baker, Clark, Able, Dover, Ellis",
+                "noVotesCount": 2,
+                "noVotes": "Dover, Ellis, Baker, Clark",
+                "absentVotesCount": 0,
+                "absentVotes": "",
+                "conflictVotesCount": 0,
+                "conflictVotes": "",
+                "excusedVotesCount": 0,
+                "excusedVotes": "",
+            }
+        ],
+    }
+
+    roll_call = build_wyoming_roll_calls(
+        detail,
+        {"S": roster},
+        timestamp="2026-07-21T00:00:00+00:00",
+    )[0]
+    positions = Counter(member["vote_position"] for member in roll_call["members"])
+
+    assert positions == {"yes": 3, "no": 2}
+    assert len({member["member_key"] for member in roll_call["members"]}) == 5

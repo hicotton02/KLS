@@ -170,6 +170,63 @@ def _int_value(value: object, fallback: int) -> int:
         return fallback
 
 
+def _reconcile_member_votes(
+    candidates_by_position: dict[str, list[dict[str, Any]]],
+    expected_counts: dict[str, int],
+) -> list[dict[str, Any]]:
+    members: dict[str, dict[str, Any]] = {}
+    options: defaultdict[str, list[str]] = defaultdict(list)
+    first_seen: dict[str, int] = {}
+    sequence = 0
+    for _, position in VOTE_POSITIONS:
+        seen_in_position: set[str] = set()
+        for candidate in candidates_by_position.get(position, []):
+            member_key = str(candidate.get("member_key") or "")
+            if not member_key or member_key in seen_in_position:
+                continue
+            seen_in_position.add(member_key)
+            members.setdefault(member_key, candidate)
+            options[member_key].append(position)
+            first_seen.setdefault(member_key, sequence)
+            sequence += 1
+
+    slots = {
+        position: [(position, index) for index in range(max(0, expected_counts.get(position, 0)))]
+        for _, position in VOTE_POSITIONS
+    }
+    slot_owner: dict[tuple[str, int], str] = {}
+
+    def place(member_key: str, visited_slots: set[tuple[str, int]]) -> bool:
+        for position in options[member_key]:
+            for slot in slots[position]:
+                if slot in visited_slots:
+                    continue
+                visited_slots.add(slot)
+                current_owner = slot_owner.get(slot)
+                if current_owner is None or place(current_owner, visited_slots):
+                    slot_owner[slot] = member_key
+                    return True
+        return False
+
+    ordered_member_keys = sorted(
+        members,
+        key=lambda member_key: (len(options[member_key]), first_seen[member_key], member_key),
+    )
+    for member_key in ordered_member_keys:
+        place(member_key, set())
+
+    reconciled: list[dict[str, Any]] = []
+    for (position, _), member_key in sorted(
+        slot_owner.items(),
+        key=lambda item: (
+            VOTE_POSITION_ORDER.get(item[0][0], len(VOTE_POSITION_ORDER)),
+            str(members[item[1]].get("legislator_name") or "").casefold(),
+        ),
+    ):
+        reconciled.append({**members[member_key], "vote_position": position})
+    return reconciled
+
+
 def _roll_call_key(roll_call: dict[str, Any], chamber: str) -> tuple[str, str]:
     raw_vote_id = roll_call.get("voteID")
     if raw_vote_id is None:
@@ -267,11 +324,17 @@ def build_wyoming_roll_calls(
                 member["vote_position"] = _normalize_vote_position(item.get("vote"))
                 members.append(member)
         else:
+            candidates_by_position: dict[str, list[dict[str, Any]]] = {}
+            expected_counts: dict[str, int] = {}
             for source_field, position in VOTE_POSITIONS:
-                for label in _split_vote_names(roll_call.get(source_field), chamber_index):
-                    member = _resolve_legislator(label, chamber, roster_indexes)
-                    member["vote_position"] = position
-                    members.append(member)
+                candidates = [
+                    _resolve_legislator(label, chamber, roster_indexes)
+                    for label in _split_vote_names(roll_call.get(source_field), chamber_index)
+                ]
+                candidates_by_position[position] = candidates
+                count_field = source_field.replace("Votes", "VotesCount")
+                expected_counts[position] = _int_value(roll_call.get(count_field), len(candidates))
+            members = _reconcile_member_votes(candidates_by_position, expected_counts)
 
         deduplicated_members: dict[str, dict[str, Any]] = {}
         for member in members:

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowLeft, CalendarDays, UserRound, Vote } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CalendarDays, UserRound, Vote } from "lucide-react";
 import { notFound } from "next/navigation";
 import { getLegislatorVotingRecord } from "../../../../lib/kls";
 
@@ -56,6 +56,11 @@ export default async function LegislatorVotingRecordPage({ params, searchParams 
           ))}
           <div><dt>Total roll calls</dt><dd>{data.counts.total}</dd></div>
         </dl>
+        {data.coverage.unattributed_roll_calls ? (
+          <p className="source-note"><AlertTriangle size={17} aria-hidden="true" />
+            {data.coverage.unattributed_roll_calls} {data.coverage.unattributed_roll_calls === 1 ? "roll call is" : "roll calls are"} excluded because Wyoming published a tally without member names.
+          </p>
+        ) : null}
       </section>
 
       <section className="content-section" aria-labelledby="vote-record-title">

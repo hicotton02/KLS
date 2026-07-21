@@ -259,6 +259,8 @@ h3 { margin-bottom: 0.4rem; font-size: 1.05rem; }
 .vote-summary-grid div { min-height: 84px; padding: 0.85rem; background: var(--surface); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .vote-summary-grid dt { color: var(--muted); font-size: 0.7rem; }
 .vote-summary-grid dd { margin: 0.2rem 0 0; font-size: 1.4rem; font-weight: 760; }
+.source-note { display: flex; align-items: flex-start; gap: 0.5rem; margin: 0.85rem 0 0; color: #7a4d00; font-size: 0.82rem; line-height: 1.45; }
+.source-note svg { flex: 0 0 auto; margin-top: 0.05rem; }
 .vote-summary-yes dd { color: var(--brand); }
 .vote-summary-no dd { color: var(--danger); }
 .vote-summary-absent dd, .vote-summary-excused dd { color: var(--amber); }

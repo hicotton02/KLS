@@ -202,6 +202,7 @@ export type LegislatorRecordResponse = {
   available_years: number[];
   selected_year: number | null;
   counts: Record<"yes" | "no" | "absent" | "conflict" | "excused" | "other" | "total", number>;
+  coverage: { unattributed_roll_calls: number };
   year_breakdown: Array<Record<string, number>>;
   votes: LegislatorVote[];
 };

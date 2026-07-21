@@ -28,7 +28,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: site
-          image: registry.skazproconsulting.com/keeping-law-simple/site:20260721-votes1@sha256:1c1b320c27535b531b4c4ce2ffd6533d1d62ec756a28d2190f7c78649de5d2ff
+          image: registry.skazproconsulting.com/keeping-law-simple/site:20260721-votes3
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000

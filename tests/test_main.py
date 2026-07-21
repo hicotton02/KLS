@@ -380,6 +380,7 @@ def test_public_api_exposes_bill_roll_calls_and_legislator_record() -> None:
     assert record["counts"]["yes"] == 1
     assert record["counts"]["no"] == 1
     assert record["counts"]["total"] == 2
+    assert record["coverage"]["unattributed_roll_calls"] == 0
     assert {vote["bill_num"] for vote in record["votes"]} == {"HB2098", "HB2099"}
     _assert_no_public_model_metadata(record)
 

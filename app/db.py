@@ -1370,6 +1370,33 @@ def get_legislator_voting_record(
     counts["total"] = len(selected_votes)
 
     latest = selected_votes[0]
+    coverage_years = [year] if year is not None else available_years
+    year_placeholders = ", ".join("?" for _ in coverage_years)
+    with connect() as connection:
+        coverage_row = connection.execute(
+            f"""
+            SELECT COUNT(*) AS unattributed_roll_calls
+            FROM bill_roll_calls AS roll_calls
+            LEFT JOIN (
+                SELECT state, year, special_session_key, bill_num, roll_call_key, COUNT(*) AS attributed_votes
+                FROM bill_roll_call_votes
+                GROUP BY state, year, special_session_key, bill_num, roll_call_key
+            ) AS vote_counts
+              ON vote_counts.state = roll_calls.state
+             AND vote_counts.year = roll_calls.year
+             AND vote_counts.special_session_key = roll_calls.special_session_key
+             AND vote_counts.bill_num = roll_calls.bill_num
+             AND vote_counts.roll_call_key = roll_calls.roll_call_key
+            WHERE roll_calls.state = ?
+              AND roll_calls.chamber = ?
+              AND roll_calls.year IN ({year_placeholders})
+              AND (
+                  roll_calls.yes_count + roll_calls.no_count + roll_calls.absent_count
+                  + roll_calls.conflict_count + roll_calls.excused_count
+              ) > COALESCE(vote_counts.attributed_votes, 0)
+            """,
+            (state, latest.get("chamber"), *coverage_years),
+        ).fetchone()
     return {
         "legislator": {
             "member_key": latest["member_key"],
@@ -1382,6 +1409,9 @@ def get_legislator_voting_record(
         "available_years": available_years,
         "selected_year": year,
         "counts": counts,
+        "coverage": {
+            "unattributed_roll_calls": int(coverage_row["unattributed_roll_calls"] or 0) if coverage_row else 0,
+        },
         "year_breakdown": [
             {"year": vote_year, **year_counts[vote_year], "total": sum(year_counts[vote_year].values())}
             for vote_year in sorted(year_counts, reverse=True)

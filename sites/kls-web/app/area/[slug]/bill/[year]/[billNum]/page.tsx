@@ -155,6 +155,9 @@ export default async function BillPage({ params, searchParams }: { params: Route
                       );
                     })}
                   </div>
+                  {rollCall.members.length < Object.values(rollCall.counts).reduce((total, count) => total + count, 0) ? (
+                    <p className="source-note"><AlertTriangle size={17} aria-hidden="true" /> Wyoming published this tally without a complete member list.</p>
+                  ) : null}
                 </div>
               </details>
             ))}
