@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS bills (
     search_blob TEXT,
     source_hash TEXT,
     source_synced_at TEXT,
+    vote_data_synced_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(state, year, special_session_key, bill_num)
@@ -90,6 +91,62 @@ CREATE TABLE IF NOT EXISTS bill_amendments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_bill_amendments_bill ON bill_amendments(state, year, bill_num, special_session_key);
+
+CREATE TABLE IF NOT EXISTS bill_roll_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    state TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    special_session_key INTEGER NOT NULL DEFAULT -1,
+    special_session_value INTEGER,
+    bill_num TEXT NOT NULL,
+    roll_call_key TEXT NOT NULL,
+    vote_id TEXT,
+    chamber TEXT,
+    vote_date TEXT,
+    vote_type TEXT,
+    action TEXT,
+    amendment_number TEXT,
+    yes_count INTEGER NOT NULL DEFAULT 0,
+    no_count INTEGER NOT NULL DEFAULT 0,
+    absent_count INTEGER NOT NULL DEFAULT 0,
+    conflict_count INTEGER NOT NULL DEFAULT 0,
+    excused_count INTEGER NOT NULL DEFAULT 0,
+    source_synced_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(state, year, special_session_key, bill_num, roll_call_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bill_roll_calls_bill
+ON bill_roll_calls(state, year, bill_num, special_session_key);
+
+CREATE TABLE IF NOT EXISTS bill_roll_call_votes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    state TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    special_session_key INTEGER NOT NULL DEFAULT -1,
+    special_session_value INTEGER,
+    bill_num TEXT NOT NULL,
+    roll_call_key TEXT NOT NULL,
+    vote_id TEXT,
+    chamber TEXT,
+    member_key TEXT NOT NULL,
+    source_legislator_id TEXT,
+    legislator_name TEXT NOT NULL,
+    vote_label TEXT,
+    party TEXT,
+    district TEXT,
+    vote_position TEXT NOT NULL,
+    source_synced_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(state, year, special_session_key, bill_num, roll_call_key, member_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bill_roll_call_votes_bill
+ON bill_roll_call_votes(state, year, bill_num, special_session_key, roll_call_key);
+CREATE INDEX IF NOT EXISTS idx_bill_roll_call_votes_member
+ON bill_roll_call_votes(state, member_key, year);
 
 CREATE TABLE IF NOT EXISTS bill_relationships (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -189,6 +246,7 @@ SEARCH_TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9'-]*")
 BILL_COLUMN_DEFINITIONS = {
     "bill_tags_json": "TEXT",
     "search_blob": "TEXT",
+    "vote_data_synced_at": "TEXT",
 }
 PAGE_VIEW_COLUMN_DEFINITIONS = {
     "region_code": "TEXT",
@@ -822,6 +880,7 @@ def get_existing_index(years: list[int], state: str = "wy") -> dict[tuple[int, i
             chapter_no,
             enrolled_no,
             source_hash,
+            vote_data_synced_at,
             interpretation_json
         FROM bills
         WHERE state = ? AND year IN ({placeholders})
@@ -859,6 +918,7 @@ def upsert_bill(payload: dict[str, Any]) -> None:
     serializable["special_session_key"] = normalize_special_session(payload.get("special_session_value"))
     serializable.setdefault("bill_tags_json", [])
     serializable.setdefault("search_blob", "")
+    serializable.setdefault("vote_data_synced_at", None)
     for column in JSON_COLUMNS:
         value = serializable.get(column)
         serializable[column] = json.dumps(value) if value is not None else None
@@ -898,6 +958,7 @@ def upsert_bill(payload: dict[str, Any]) -> None:
         "search_blob",
         "source_hash",
         "source_synced_at",
+        "vote_data_synced_at",
         "created_at",
         "updated_at",
     ]
@@ -1005,6 +1066,328 @@ def replace_bill_amendments(
                 serializable_rows,
             )
         connection.commit()
+
+
+def replace_bill_roll_calls(
+    state: str,
+    year: int,
+    bill_num: str,
+    *,
+    special_session_value: int | None = None,
+    payloads: list[dict[str, Any]],
+) -> None:
+    special_session_key = normalize_special_session(special_session_value)
+    roll_call_columns = [
+        "state",
+        "year",
+        "special_session_key",
+        "special_session_value",
+        "bill_num",
+        "roll_call_key",
+        "vote_id",
+        "chamber",
+        "vote_date",
+        "vote_type",
+        "action",
+        "amendment_number",
+        "yes_count",
+        "no_count",
+        "absent_count",
+        "conflict_count",
+        "excused_count",
+        "source_synced_at",
+        "created_at",
+        "updated_at",
+    ]
+    member_columns = [
+        "state",
+        "year",
+        "special_session_key",
+        "special_session_value",
+        "bill_num",
+        "roll_call_key",
+        "vote_id",
+        "chamber",
+        "member_key",
+        "source_legislator_id",
+        "legislator_name",
+        "vote_label",
+        "party",
+        "district",
+        "vote_position",
+        "source_synced_at",
+        "created_at",
+        "updated_at",
+    ]
+
+    roll_call_rows: list[dict[str, Any]] = []
+    member_rows: list[dict[str, Any]] = []
+    for payload in payloads:
+        item = dict(payload)
+        members = list(item.pop("members", []) or [])
+        item["state"] = state
+        item["year"] = year
+        item["bill_num"] = bill_num
+        item["special_session_value"] = special_session_value
+        item["special_session_key"] = special_session_key
+        roll_call_rows.append(item)
+        for member_payload in members:
+            member = dict(member_payload)
+            member.update(
+                {
+                    "state": state,
+                    "year": year,
+                    "special_session_key": special_session_key,
+                    "special_session_value": special_session_value,
+                    "bill_num": bill_num,
+                    "roll_call_key": item["roll_call_key"],
+                    "vote_id": item.get("vote_id"),
+                    "chamber": item.get("chamber"),
+                    "source_synced_at": item.get("source_synced_at"),
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                }
+            )
+            member_rows.append(member)
+
+    roll_call_placeholders = ", ".join(f":{column}" for column in roll_call_columns)
+    member_placeholders = ", ".join(f":{column}" for column in member_columns)
+    with connect() as connection:
+        connection.execute(
+            """
+            DELETE FROM bill_roll_call_votes
+            WHERE state = ? AND year = ? AND bill_num = ? AND special_session_key = ?
+            """,
+            (state, year, bill_num, special_session_key),
+        )
+        connection.execute(
+            """
+            DELETE FROM bill_roll_calls
+            WHERE state = ? AND year = ? AND bill_num = ? AND special_session_key = ?
+            """,
+            (state, year, bill_num, special_session_key),
+        )
+        if roll_call_rows:
+            connection.executemany(
+                f"""
+                INSERT INTO bill_roll_calls ({', '.join(roll_call_columns)})
+                VALUES ({roll_call_placeholders})
+                """,
+                roll_call_rows,
+            )
+        if member_rows:
+            connection.executemany(
+                f"""
+                INSERT INTO bill_roll_call_votes ({', '.join(member_columns)})
+                VALUES ({member_placeholders})
+                """,
+                member_rows,
+            )
+        connection.commit()
+
+
+def mark_bill_vote_data_synced(
+    state: str,
+    year: int,
+    bill_num: str,
+    *,
+    special_session_value: int | None = None,
+    timestamp: str,
+) -> None:
+    with connect() as connection:
+        connection.execute(
+            """
+            UPDATE bills
+            SET vote_data_synced_at = ?
+            WHERE state = ? AND year = ? AND bill_num = ? AND special_session_key = ?
+            """,
+            (timestamp, state, year, bill_num, normalize_special_session(special_session_value)),
+        )
+        connection.commit()
+
+
+def list_bill_roll_calls(
+    state: str,
+    year: int,
+    bill_num: str,
+    *,
+    special_session_value: int | None = None,
+) -> list[dict[str, Any]]:
+    special_session_key = normalize_special_session(special_session_value)
+    params = (state, year, bill_num, special_session_key)
+    with connect() as connection:
+        roll_call_rows = connection.execute(
+            """
+            SELECT *
+            FROM bill_roll_calls
+            WHERE state = ? AND year = ? AND bill_num = ? AND special_session_key = ?
+            ORDER BY vote_date DESC, roll_call_key DESC
+            """,
+            params,
+        ).fetchall()
+        member_rows = connection.execute(
+            """
+            SELECT *
+            FROM bill_roll_call_votes
+            WHERE state = ? AND year = ? AND bill_num = ? AND special_session_key = ?
+            ORDER BY roll_call_key, vote_position, legislator_name
+            """,
+            params,
+        ).fetchall()
+
+    members_by_roll_call: dict[str, list[dict[str, Any]]] = {}
+    for row in member_rows:
+        member = dict(row)
+        members_by_roll_call.setdefault(str(member["roll_call_key"]), []).append(member)
+
+    roll_calls = []
+    for row in roll_call_rows:
+        roll_call = dict(row)
+        roll_call["members"] = members_by_roll_call.get(str(roll_call["roll_call_key"]), [])
+        roll_calls.append(roll_call)
+    return roll_calls
+
+
+def list_legislator_vote_summaries(
+    state: str,
+    *,
+    query: str = "",
+    year: int | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    clauses = ["state = ?"]
+    params: list[Any] = [state]
+    if year is not None:
+        clauses.append("year = ?")
+        params.append(year)
+    normalized_query = str(query or "").strip().casefold()
+    if normalized_query:
+        clauses.append("(LOWER(legislator_name) LIKE ? OR LOWER(COALESCE(district, '')) LIKE ?)")
+        search_value = f"%{normalized_query}%"
+        params.extend([search_value, search_value])
+
+    safe_limit = max(1, min(int(limit), 250))
+    params.append(safe_limit)
+    sql = f"""
+        SELECT
+            member_key,
+            MAX(source_legislator_id) AS source_legislator_id,
+            MAX(legislator_name) AS legislator_name,
+            MAX(party) AS party,
+            MAX(district) AS district,
+            MAX(chamber) AS chamber,
+            MAX(year) AS latest_year,
+            COUNT(*) AS total_votes,
+            COUNT(DISTINCT CAST(year AS TEXT) || ':' || bill_num || ':' || CAST(special_session_key AS TEXT)) AS bills_voted,
+            SUM(CASE WHEN vote_position = 'yes' THEN 1 ELSE 0 END) AS yes_count,
+            SUM(CASE WHEN vote_position = 'no' THEN 1 ELSE 0 END) AS no_count,
+            SUM(CASE WHEN vote_position = 'absent' THEN 1 ELSE 0 END) AS absent_count,
+            SUM(CASE WHEN vote_position = 'conflict' THEN 1 ELSE 0 END) AS conflict_count,
+            SUM(CASE WHEN vote_position = 'excused' THEN 1 ELSE 0 END) AS excused_count
+        FROM bill_roll_call_votes
+        WHERE {' AND '.join(clauses)}
+        GROUP BY member_key
+        ORDER BY legislator_name ASC
+        LIMIT ?
+    """
+    with connect() as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_legislator_voting_record(
+    state: str,
+    member_key: str,
+    *,
+    year: int | None = None,
+    limit: int = 200,
+) -> dict[str, Any] | None:
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                votes.member_key,
+                votes.source_legislator_id,
+                votes.legislator_name,
+                votes.party,
+                votes.district,
+                votes.chamber,
+                votes.vote_position,
+                votes.year,
+                votes.special_session_value,
+                votes.bill_num,
+                votes.roll_call_key,
+                votes.vote_id,
+                roll_calls.vote_date,
+                roll_calls.vote_type,
+                roll_calls.action,
+                roll_calls.amendment_number,
+                roll_calls.yes_count,
+                roll_calls.no_count,
+                roll_calls.absent_count,
+                roll_calls.conflict_count,
+                roll_calls.excused_count,
+                bills.catch_title,
+                bills.bill_title,
+                bills.outcome,
+                bills.status_label
+            FROM bill_roll_call_votes AS votes
+            JOIN bill_roll_calls AS roll_calls
+              ON roll_calls.state = votes.state
+             AND roll_calls.year = votes.year
+             AND roll_calls.special_session_key = votes.special_session_key
+             AND roll_calls.bill_num = votes.bill_num
+             AND roll_calls.roll_call_key = votes.roll_call_key
+            JOIN bills
+              ON bills.state = votes.state
+             AND bills.year = votes.year
+             AND bills.special_session_key = votes.special_session_key
+             AND bills.bill_num = votes.bill_num
+            WHERE votes.state = ? AND votes.member_key = ?
+            ORDER BY roll_calls.vote_date DESC, votes.year DESC, votes.bill_num ASC
+            """,
+            (state, member_key),
+        ).fetchall()
+
+    all_votes = [dict(row) for row in rows]
+    if not all_votes:
+        return None
+    available_years = sorted({int(row["year"]) for row in all_votes}, reverse=True)
+    selected_votes = [row for row in all_votes if year is None or int(row["year"]) == year]
+    if year is not None and not selected_votes:
+        return None
+
+    positions = ("yes", "no", "absent", "conflict", "excused")
+    counts = {position: 0 for position in positions}
+    counts["other"] = 0
+    year_counts: dict[int, dict[str, int]] = {}
+    for vote in selected_votes:
+        position = str(vote.get("vote_position") or "other")
+        counts[position if position in counts else "other"] += 1
+        vote_year = int(vote["year"])
+        summary = year_counts.setdefault(vote_year, {item: 0 for item in (*positions, "other")})
+        summary[position if position in summary else "other"] += 1
+    counts["total"] = len(selected_votes)
+
+    latest = selected_votes[0]
+    return {
+        "legislator": {
+            "member_key": latest["member_key"],
+            "source_legislator_id": latest.get("source_legislator_id"),
+            "name": latest.get("legislator_name"),
+            "party": latest.get("party"),
+            "district": latest.get("district"),
+            "chamber": latest.get("chamber"),
+        },
+        "available_years": available_years,
+        "selected_year": year,
+        "counts": counts,
+        "year_breakdown": [
+            {"year": vote_year, **year_counts[vote_year], "total": sum(year_counts[vote_year].values())}
+            for vote_year in sorted(year_counts, reverse=True)
+        ],
+        "votes": selected_votes[: max(1, min(int(limit), 500))],
+    }
 
 
 def replace_bill_relationships(state: str, year: int, payloads: list[dict[str, Any]]) -> None:

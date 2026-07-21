@@ -4,6 +4,7 @@ from typing import Any
 
 import httpx
 
+from app.http_retry import get_with_retries
 from app.settings import Settings
 from app.text_utils import html_to_text, pdf_bytes_to_text
 
@@ -48,7 +49,7 @@ class WyomingApiClient:
             "$filter": " and ".join(filter_parts),
             "$orderby": "SpecialSessionValue,BillNum",
         }
-        response = self.client.get("/BillInformation", params=params)
+        response = get_with_retries(self.client, "/BillInformation", params=params)
         response.raise_for_status()
         return response.json()
 
@@ -56,9 +57,15 @@ class WyomingApiClient:
         path = f"/BillInformation/{year}/{bill_num}"
         if special_session_value is not None:
             path += f"/{special_session_value}"
-        response = self.client.get(path)
+        response = get_with_retries(self.client, path)
         response.raise_for_status()
         return response.json()
+
+    def fetch_legislators(self, year: int, chamber: str) -> list[dict[str, Any]]:
+        response = get_with_retries(self.client, f"/legislator/{year}/{chamber}")
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, list) else []
 
     def public_document_url(self, path: str | None) -> str | None:
         if not path:
@@ -78,7 +85,7 @@ class WyomingApiClient:
     def fetch_public_document_text(self, url: str | None) -> str:
         if not url:
             return ""
-        response = self.client.get(url)
+        response = get_with_retries(self.client, url)
         response.raise_for_status()
         content_type = response.headers.get("content-type", "").lower()
         if url.lower().endswith(".pdf") or "pdf" in content_type:

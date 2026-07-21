@@ -25,22 +25,25 @@ from app.analytics import (
     track_page_view,
 )
 from app.db import (
-    get_bill,
     get_analytics_overview,
-    get_jurisdiction_rollups,
-    list_available_tags,
-    list_bill_amendments,
+    get_bill,
     get_bill_relationships_for_bill,
+    get_jurisdiction_rollups,
+    get_legislator_voting_record,
     get_dashboard_counts,
     get_latest_bill_refresh,
     get_sync_status,
     init_db,
+    list_available_tags,
+    list_bill_amendments,
+    list_bill_roll_calls,
     list_bills,
+    list_legislator_vote_summaries,
     list_recent_bills,
     list_sync_statuses,
-    search_bills,
     list_years,
     normalize_special_session,
+    search_bills,
 )
 from app.federal_api import congress_bill_number_part, congress_bill_public_url
 from app.jurisdictions import (
@@ -54,6 +57,7 @@ from app.jurisdictions import (
 from app.relationship_service import relationship_peer
 from app.settings import get_settings
 from app.tagging import tag_label
+from app.voting import chamber_title
 from app.wyoming_api import WyomingApiClient
 
 
@@ -887,6 +891,46 @@ def _bill_summary_json(jurisdiction: Jurisdiction, bill: dict[str, object]) -> d
     }
 
 
+def _roll_call_json(roll_call: dict[str, object]) -> dict[str, object]:
+    members = []
+    for raw_member in roll_call.get("members") or []:
+        if not isinstance(raw_member, dict):
+            continue
+        member_key = str(raw_member.get("member_key") or "")
+        chamber = str(raw_member.get("chamber") or roll_call.get("chamber") or "")
+        members.append(
+            {
+                "member_key": member_key,
+                "source_legislator_id": raw_member.get("source_legislator_id"),
+                "name": raw_member.get("legislator_name"),
+                "vote_label": raw_member.get("vote_label"),
+                "party": raw_member.get("party"),
+                "district": raw_member.get("district"),
+                "chamber": chamber,
+                "title": chamber_title(chamber),
+                "vote": raw_member.get("vote_position"),
+                "profile_href": f"/area/wyoming/legislators/{member_key}",
+            }
+        )
+    return {
+        "roll_call_key": roll_call.get("roll_call_key"),
+        "vote_id": roll_call.get("vote_id"),
+        "chamber": roll_call.get("chamber"),
+        "vote_date": roll_call.get("vote_date"),
+        "vote_type": roll_call.get("vote_type"),
+        "action": roll_call.get("action"),
+        "amendment_number": roll_call.get("amendment_number"),
+        "counts": {
+            "yes": int(roll_call.get("yes_count") or 0),
+            "no": int(roll_call.get("no_count") or 0),
+            "absent": int(roll_call.get("absent_count") or 0),
+            "conflict": int(roll_call.get("conflict_count") or 0),
+            "excused": int(roll_call.get("excused_count") or 0),
+        },
+        "members": members,
+    }
+
+
 PUBLIC_MODEL_METADATA_KEYS = {"generator_model", "interpretation_model", "model", "model_name"}
 
 
@@ -1119,6 +1163,12 @@ def _render_bill_detail(
         bill_num,
         special_session_value=special_session,
     )
+    roll_calls = list_bill_roll_calls(
+        jurisdiction.state_code or "",
+        year,
+        bill_num,
+        special_session_value=special_session,
+    )
     actions = bill.get("bill_actions_json") or []
     actions = sorted(actions, key=lambda item: item.get("statusDate", ""), reverse=True)
     related_relationships = []
@@ -1149,6 +1199,7 @@ def _render_bill_detail(
             "interpretation": interpretation,
             "bill_tags": bill_tags,
             "amendments": amendments,
+            "roll_calls": [_roll_call_json(item) for item in roll_calls],
             "actions": actions,
             "related_relationships": related_relationships,
             "back_href": _bill_back_href(jurisdiction, year),
@@ -1322,6 +1373,79 @@ def api_search(
     )
 
 
+@app.get("/api/v1/areas/{area_slug}/legislators")
+def api_legislators(
+    area_slug: str,
+    q: str = Query(default=""),
+    year: int | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=250),
+) -> JSONResponse:
+    jurisdiction = get_jurisdiction(area_slug)
+    if jurisdiction is None or jurisdiction.state_code != "wy":
+        raise HTTPException(status_code=404, detail="Legislator voting records are not available for this area")
+    legislators = []
+    for row in list_legislator_vote_summaries("wy", query=q, year=year, limit=limit):
+        chamber = str(row.get("chamber") or "")
+        member_key = str(row.get("member_key") or "")
+        legislators.append(
+            {
+                **row,
+                "title": chamber_title(chamber),
+                "profile_href": f"/area/wyoming/legislators/{member_key}",
+            }
+        )
+    raw_sync_status = get_sync_status("wy")
+    return _public_json_response(
+        {
+            "jurisdiction": _jurisdiction_json(
+                jurisdiction,
+                last_scanned_at=_last_scanned_at(raw_sync_status),
+            ),
+            "available_years": list_years("wy"),
+            "selected_year": year,
+            "query": q,
+            "legislators": legislators,
+        },
+        max_age=60,
+    )
+
+
+@app.get("/api/v1/areas/{area_slug}/legislators/{member_key}")
+def api_legislator_voting_record(
+    area_slug: str,
+    member_key: str,
+    year: int | None = Query(default=None),
+) -> JSONResponse:
+    jurisdiction = get_jurisdiction(area_slug)
+    if jurisdiction is None or jurisdiction.state_code != "wy":
+        raise HTTPException(status_code=404, detail="Legislator voting records are not available for this area")
+    record = get_legislator_voting_record("wy", member_key, year=year, limit=300)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Legislator voting record not found")
+
+    legislator = record["legislator"]
+    chamber = str(legislator.get("chamber") or "")
+    legislator["title"] = chamber_title(chamber)
+    for vote in record["votes"]:
+        vote_year = int(vote["year"])
+        bill_num = str(vote["bill_num"])
+        special_session = vote.get("special_session_value")
+        query_string = "" if special_session is None else f"?{urlencode({'special_session': special_session})}"
+        vote["bill_href"] = f"/area/wyoming/bill/{vote_year}/{bill_num}{query_string}"
+
+    raw_sync_status = get_sync_status("wy")
+    return _public_json_response(
+        {
+            "jurisdiction": _jurisdiction_json(
+                jurisdiction,
+                last_scanned_at=_last_scanned_at(raw_sync_status),
+            ),
+            **record,
+        },
+        max_age=60,
+    )
+
+
 @app.get("/api/v1/areas/{area_slug}/bills/{year}/{bill_num}")
 def api_bill_detail(
     area_slug: str,
@@ -1342,6 +1466,12 @@ def api_bill_detail(
     actions = bill.get("bill_actions_json") or []
     actions = sorted(actions, key=lambda item: item.get("statusDate", ""), reverse=True)
     amendments = list_bill_amendments(
+        jurisdiction.state_code or "",
+        year,
+        bill_num,
+        special_session_value=special_session,
+    )
+    roll_calls = list_bill_roll_calls(
         jurisdiction.state_code or "",
         year,
         bill_num,
@@ -1398,6 +1528,7 @@ def api_bill_detail(
             "interpretation": interpretation,
             "official_links": _official_links_for_bill(jurisdiction, bill),
             "actions": actions,
+            "roll_calls": [_roll_call_json(item) for item in roll_calls],
             "amendments": amendments,
             "relationships": relationships,
         },

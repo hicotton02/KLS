@@ -60,6 +60,7 @@ from app.sync_service import (
     sync_west_virginia,
     sync_wisconsin,
     sync_wyoming,
+    sync_wyoming_votes,
 )
 
 
@@ -68,6 +69,14 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("init-db", help="Create the local database schema")
+
+    vote_parser = subparsers.add_parser(
+        "sync-wyoming-votes",
+        help="Backfill Wyoming roll calls and legislator votes without reprocessing bill summaries",
+    )
+    vote_parser.add_argument("--years", help="Comma-separated list of Wyoming legislative years")
+    vote_parser.add_argument("--limit", type=int, help="Optional max number of bills to process")
+    vote_parser.add_argument("--force", action="store_true", help="Refresh bills that already have vote data")
 
     sync_parser = subparsers.add_parser("sync", help="Sync supported state and federal bills into the local database")
     sync_parser.add_argument("--alaska-years", help="Comma-separated list of Alaska legislative years")
@@ -412,6 +421,19 @@ def main() -> None:
     if args.command == "init-db":
         init_db()
         print(f"Initialized database at {settings.database_path}")
+        return
+
+    if args.command == "sync-wyoming-votes":
+        years = None
+        if args.years:
+            years = [int(item.strip()) for item in args.years.split(",") if item.strip()]
+        summary = sync_wyoming_votes(
+            years=years,
+            limit=args.limit,
+            force=args.force,
+            logger=print,
+        )
+        print(json.dumps(asdict(summary), indent=2))
         return
 
     if args.command == "sync":

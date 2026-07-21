@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import asdict, dataclass
+from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
 from app.alaska_api import AlaskaApiClient
@@ -23,8 +23,10 @@ from app.db import (
     list_bill_amendments,
     list_bills,
     list_years,
+    mark_bill_vote_data_synced,
     normalize_special_session,
     replace_bill_amendments,
+    replace_bill_roll_calls,
     reset_stale_sync_statuses,
     update_sync_status,
     upsert_bill,
@@ -78,6 +80,7 @@ from app.washington_api import WashingtonApiClient
 from app.westvirginia_api import WestVirginiaApiClient
 from app.wisconsin_api import WisconsinApiClient
 from app.wyoming_api import WyomingApiClient
+from app.voting import build_wyoming_roll_calls
 
 
 Logger = Callable[[str], None]
@@ -120,12 +123,24 @@ class CompletedBillSync:
     payload: dict[str, Any]
     index_payload: dict[str, Any]
     amendments: list[dict[str, Any]]
+    roll_calls: list[dict[str, Any]] = field(default_factory=list)
     interpreted: int = 0
     validated: int = 0
     fallback_interpretations: int = 0
     amendments_seen: int = 0
     amendments_summarized: int = 0
     tagged: int = 0
+
+
+@dataclass
+class WyomingVoteSyncStats:
+    years: list[int]
+    seen: int = 0
+    updated: int = 0
+    skipped: int = 0
+    roll_calls: int = 0
+    member_votes: int = 0
+    failed: int = 0
 
 
 @dataclass(frozen=True)
@@ -281,6 +296,13 @@ def sync_wyoming(
             pending: dict[Future[CompletedBillSync], tuple[str, int]] = {}
             log(f"Fetching Wyoming bill list for {year}")
             progress.note_year(year)
+            legislators_by_chamber: dict[str, list[dict[str, Any]]] = {}
+            for chamber in ("H", "S"):
+                try:
+                    legislators_by_chamber[chamber] = api.fetch_legislators(year, chamber)
+                except Exception as exc:  # noqa: BLE001
+                    legislators_by_chamber[chamber] = []
+                    log(f"Could not load Wyoming {chamber} roster for {year}: {exc}")
             bills = api.fetch_year_bills(year)
             progress.note_scope_totals(year, source_total=len(bills), stored_total=count_bills_for_year("wy", year))
             for item in bills:
@@ -293,7 +315,12 @@ def sync_wyoming(
                 key = (year, normalize_special_session(item.get("specialSessionValue")), item["billNum"])
                 existing = existing_index.get(key)
 
-                if not _needs_refresh(existing, item, skip_interpretation, settings.ollama_model):
+                if existing and existing.get("vote_data_synced_at") and not _needs_refresh(
+                    existing,
+                    item,
+                    skip_interpretation,
+                    settings.ollama_model,
+                ):
                     stats.skipped += 1
                     progress.note_checked(item["billNum"], year, changed=False)
                     continue
@@ -332,6 +359,7 @@ def sync_wyoming(
                         enrolled_no=detail.get("enrolledNumber"),
                         source_hash=source_hash,
                     )
+                    index_payload["vote_data_synced_at"] = timestamp
                     existing_bill = get_bill("wy", year, item["billNum"], special_session_value=item.get("specialSessionValue"))
                     existing_amendments = list_bill_amendments(
                         "wy",
@@ -354,6 +382,7 @@ def sync_wyoming(
                             skip_interpretation=skip_interpretation,
                             existing_bill=existing_bill,
                             existing_amendments=existing_amendments,
+                            legislators_by_chamber=legislators_by_chamber,
                         )
                         _apply_completed_bill(completed, stats, existing_index, log, progress=progress)
                     else:
@@ -372,6 +401,7 @@ def sync_wyoming(
                             skip_interpretation,
                             existing_bill,
                             existing_amendments,
+                            legislators_by_chamber,
                         )
                         pending[future] = (item["billNum"], year)
                         if len(pending) >= settings.sync_parallelism * 2:
@@ -412,6 +442,110 @@ def sync_wyoming(
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=False)
         progress.finish(fatal_error=fatal_error)
+
+    return stats
+
+
+def sync_wyoming_votes(
+    years: list[int] | None = None,
+    limit: int | None = None,
+    force: bool = False,
+    logger: Logger | None = None,
+) -> WyomingVoteSyncStats:
+    settings = get_settings()
+    init_db()
+    selected_years = years or list(settings.wyoming_years)
+    stats = WyomingVoteSyncStats(years=list(selected_years))
+    existing_index = get_existing_index(list(selected_years), state="wy")
+    log = logger or (lambda message: None)
+    api = WyomingApiClient(settings)
+    remaining = None if limit is None else max(0, int(limit))
+
+    try:
+        for year in selected_years:
+            legislators_by_chamber: dict[str, list[dict[str, Any]]] = {}
+            for chamber in ("H", "S"):
+                try:
+                    legislators_by_chamber[chamber] = api.fetch_legislators(year, chamber)
+                except Exception as exc:  # noqa: BLE001
+                    legislators_by_chamber[chamber] = []
+                    log(f"Could not load Wyoming {chamber} roster for {year}: {exc}")
+
+            bills = api.fetch_year_bills(year)
+            selected_items: list[dict[str, Any]] = []
+            for item in bills:
+                key = (year, normalize_special_session(item.get("specialSessionValue")), item["billNum"])
+                existing = existing_index.get(key)
+                if existing is None:
+                    continue
+                stats.seen += 1
+                if not force and existing.get("vote_data_synced_at"):
+                    stats.skipped += 1
+                    continue
+                if remaining is not None and remaining <= 0:
+                    break
+                selected_items.append(item)
+                if remaining is not None:
+                    remaining -= 1
+
+            if not selected_items:
+                if remaining == 0:
+                    break
+                continue
+
+            max_workers = max(1, min(int(settings.sync_parallelism), 8))
+            log(f"Fetching Wyoming roll calls for {len(selected_items)} bills in {year} with {max_workers} workers")
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        api.fetch_bill_detail,
+                        year,
+                        str(item["billNum"]),
+                        item.get("specialSessionValue"),
+                    ): item
+                    for item in selected_items
+                }
+                for future in as_completed(futures):
+                    item = futures[future]
+                    bill_num = str(item["billNum"])
+                    special_session_value = item.get("specialSessionValue")
+                    try:
+                        detail = future.result()
+                        timestamp = iso_now()
+                        roll_calls = build_wyoming_roll_calls(
+                            detail,
+                            legislators_by_chamber,
+                            timestamp=timestamp,
+                        )
+                        replace_bill_roll_calls(
+                            "wy",
+                            year,
+                            bill_num,
+                            special_session_value=special_session_value,
+                            payloads=roll_calls,
+                        )
+                        mark_bill_vote_data_synced(
+                            "wy",
+                            year,
+                            bill_num,
+                            special_session_value=special_session_value,
+                            timestamp=timestamp,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        stats.failed += 1
+                        log(f"Failed Wyoming vote sync for {bill_num} ({year}): {exc}")
+                        continue
+
+                    stats.updated += 1
+                    stats.roll_calls += len(roll_calls)
+                    stats.member_votes += sum(len(roll_call.get("members") or []) for roll_call in roll_calls)
+                    if stats.updated % 25 == 0:
+                        log(f"Stored Wyoming votes for {stats.updated} bills")
+
+            if remaining == 0:
+                break
+    finally:
+        api.close()
 
     return stats
 
@@ -3795,6 +3929,14 @@ def _apply_completed_bill(
         special_session_value=completed.payload.get("special_session_value"),
         payloads=completed.amendments,
     )
+    if completed.payload["state"] == "wy":
+        replace_bill_roll_calls(
+            completed.payload["state"],
+            completed.payload["year"],
+            completed.payload["bill_num"],
+            special_session_value=completed.payload.get("special_session_value"),
+            payloads=completed.roll_calls,
+        )
     existing_index[completed.index_key] = completed.index_payload
     stats.updated += 1
     stats.interpreted += completed.interpreted
@@ -4121,6 +4263,7 @@ def _complete_state_bill(
     skip_interpretation: bool,
     existing_bill: dict[str, Any] | None = None,
     existing_amendments: list[dict[str, Any]] | None = None,
+    roll_calls: list[dict[str, Any]] | None = None,
 ) -> CompletedBillSync:
     source_hash = str(base_payload.get("source_hash") or "")
     payload = dict(base_payload)
@@ -4190,6 +4333,7 @@ def _complete_state_bill(
             payload=payload,
             index_payload=index_payload,
             amendments=amendments,
+            roll_calls=roll_calls or [],
             interpreted=interpreted,
             validated=validated,
             fallback_interpretations=fallback_interpretations,
@@ -4287,7 +4431,13 @@ def _complete_wyoming_bill(
     skip_interpretation: bool,
     existing_bill: dict[str, Any] | None = None,
     existing_amendments: list[dict[str, Any]] | None = None,
+    legislators_by_chamber: dict[str, list[dict[str, Any]]] | None = None,
 ) -> CompletedBillSync:
+    roll_calls = build_wyoming_roll_calls(
+        detail,
+        legislators_by_chamber,
+        timestamp=str(base_payload.get("vote_data_synced_at") or iso_now()),
+    )
     return _complete_state_bill(
         settings=settings,
         index_key=index_key,
@@ -4302,6 +4452,7 @@ def _complete_wyoming_bill(
         skip_interpretation=skip_interpretation,
         existing_bill=existing_bill,
         existing_amendments=existing_amendments,
+        roll_calls=roll_calls,
     )
 
 
@@ -4425,7 +4576,7 @@ def _build_wyoming_payload(
         detail.get("engrossedVersion"),
         detail.get("introduced"),
     )
-    return _build_state_payload(
+    payload = _build_state_payload(
         state_code="wy",
         year=year,
         detail=normalized_detail,
@@ -4436,6 +4587,8 @@ def _build_wyoming_payload(
         source_hash=source_hash,
         timestamp=timestamp,
     )
+    payload["vote_data_synced_at"] = timestamp
+    return payload
 
 
 def _build_federal_payload(

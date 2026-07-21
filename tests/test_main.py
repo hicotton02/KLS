@@ -1,7 +1,15 @@
 from fastapi.testclient import TestClient
 
 from app import main as main_module
-from app.db import connect, init_db, replace_bill_amendments, replace_bill_relationships, update_sync_status, upsert_bill
+from app.db import (
+    connect,
+    init_db,
+    replace_bill_amendments,
+    replace_bill_relationships,
+    replace_bill_roll_calls,
+    update_sync_status,
+    upsert_bill,
+)
 from app.jurisdictions import get_state_jurisdiction
 from app.main import _collapse_related_relationships, app
 
@@ -309,6 +317,71 @@ def test_public_api_search_area_and_bill_detail() -> None:
     _assert_no_public_model_metadata(search_response.json())
     _assert_no_public_model_metadata(area_response.json())
     _assert_no_public_model_metadata(detail)
+
+
+def test_public_api_exposes_bill_roll_calls_and_legislator_record() -> None:
+    init_db()
+    _seed_state_bill("HB2098", "Recorded vote test", year=2098)
+    _seed_state_bill("HB2099", "Second recorded vote", year=2098)
+    timestamp = "2098-02-21T21:03:17+00:00"
+    common_member = {
+        "member_key": "wy-2093",
+        "source_legislator_id": "2093",
+        "legislator_name": "Scott Smith",
+        "vote_label": "Smith",
+        "party": "R",
+        "district": "H05",
+    }
+    for bill_num, position, vote_id in (("HB2098", "yes", "5361"), ("HB2099", "no", "5362")):
+        replace_bill_roll_calls(
+            "wy",
+            2098,
+            bill_num,
+            payloads=[
+                {
+                    "roll_call_key": f"h-{vote_id}",
+                    "vote_id": vote_id,
+                    "chamber": "H",
+                    "vote_date": timestamp,
+                    "vote_type": "F",
+                    "action": f"H 3rd Reading:{position.title()}",
+                    "amendment_number": None,
+                    "yes_count": 1 if position == "yes" else 0,
+                    "no_count": 1 if position == "no" else 0,
+                    "absent_count": 0,
+                    "conflict_count": 0,
+                    "excused_count": 0,
+                    "members": [{**common_member, "vote_position": position}],
+                    "source_synced_at": timestamp,
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                }
+            ],
+        )
+
+    client = TestClient(app)
+    detail_response = client.get("/api/v1/areas/wyoming/bills/2098/HB2098")
+    directory_response = client.get("/api/v1/areas/wyoming/legislators", params={"q": "smith"})
+    record_response = client.get("/api/v1/areas/wyoming/legislators/wy-2093")
+
+    assert detail_response.status_code == 200
+    roll_call = detail_response.json()["roll_calls"][0]
+    assert roll_call["counts"] == {"yes": 1, "no": 0, "absent": 0, "conflict": 0, "excused": 0}
+    assert roll_call["members"][0]["name"] == "Scott Smith"
+    assert roll_call["members"][0]["profile_href"] == "/area/wyoming/legislators/wy-2093"
+
+    assert directory_response.status_code == 200
+    assert directory_response.json()["legislators"][0]["legislator_name"] == "Scott Smith"
+    assert directory_response.json()["legislators"][0]["total_votes"] == 2
+
+    assert record_response.status_code == 200
+    record = record_response.json()
+    assert record["legislator"]["title"] == "Representative"
+    assert record["counts"]["yes"] == 1
+    assert record["counts"]["no"] == 1
+    assert record["counts"]["total"] == 2
+    assert {vote["bill_num"] for vote in record["votes"]} == {"HB2098", "HB2099"}
+    _assert_no_public_model_metadata(record)
 
 
 def test_home_shows_compact_sync_status() -> None:

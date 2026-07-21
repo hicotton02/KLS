@@ -95,6 +95,31 @@ export type Interpretation = {
   fact_check_notes?: string[];
 };
 
+export type RollCallMember = {
+  member_key: string;
+  source_legislator_id: string | null;
+  name: string;
+  vote_label: string;
+  party: string | null;
+  district: string | null;
+  chamber: string;
+  title: string;
+  vote: "yes" | "no" | "absent" | "conflict" | "excused" | "other";
+  profile_href: string;
+};
+
+export type RollCall = {
+  roll_call_key: string;
+  vote_id: string | null;
+  chamber: string;
+  vote_date: string | null;
+  vote_type: string | null;
+  action: string | null;
+  amendment_number: string | null;
+  counts: { yes: number; no: number; absent: number; conflict: number; excused: number };
+  members: RollCallMember[];
+};
+
 export type BillDetailResponse = {
   jurisdiction: Jurisdiction;
   bill: BillSummary & {
@@ -108,6 +133,7 @@ export type BillDetailResponse = {
   interpretation: Interpretation;
   official_links: Record<string, string | null>;
   actions: { statusDate?: string; statusMessage?: string; location?: string }[];
+  roll_calls: RollCall[];
   amendments: Array<Record<string, unknown>>;
   relationships: Array<{
     peer: BillSummary;
@@ -118,6 +144,66 @@ export type BillDetailResponse = {
     why_reviews: string[];
     evidence_items: string[];
   }>;
+};
+
+export type LegislatorSummary = {
+  member_key: string;
+  source_legislator_id: string | null;
+  legislator_name: string;
+  party: string | null;
+  district: string | null;
+  chamber: string;
+  latest_year: number;
+  total_votes: number;
+  bills_voted: number;
+  yes_count: number;
+  no_count: number;
+  absent_count: number;
+  conflict_count: number;
+  excused_count: number;
+  title: string;
+  profile_href: string;
+};
+
+export type LegislatorsResponse = {
+  jurisdiction: Jurisdiction;
+  available_years: number[];
+  selected_year: number | null;
+  query: string;
+  legislators: LegislatorSummary[];
+};
+
+export type LegislatorVote = {
+  year: number;
+  special_session_value: number | null;
+  bill_num: string;
+  vote_position: "yes" | "no" | "absent" | "conflict" | "excused" | "other";
+  vote_date: string | null;
+  action: string | null;
+  amendment_number: string | null;
+  catch_title: string | null;
+  bill_title: string | null;
+  outcome: string | null;
+  status_label: string | null;
+  bill_href: string;
+};
+
+export type LegislatorRecordResponse = {
+  jurisdiction: Jurisdiction;
+  legislator: {
+    member_key: string;
+    source_legislator_id: string | null;
+    name: string;
+    party: string | null;
+    district: string | null;
+    chamber: string;
+    title: string;
+  };
+  available_years: number[];
+  selected_year: number | null;
+  counts: Record<"yes" | "no" | "absent" | "conflict" | "excused" | "other" | "total", number>;
+  year_breakdown: Array<Record<string, number>>;
+  votes: LegislatorVote[];
 };
 
 const API_BASE_URL = (process.env.KLS_API_BASE_URL ?? "https://www.keepinglawsimple.org").replace(/\/$/, "");
@@ -265,6 +351,21 @@ export async function getBillDetail(
   return fetchKls<BillDetailResponse>(
     `/api/v1/areas/${encodeURIComponent(slug)}/bills/${encodeURIComponent(year)}/${encodeURIComponent(billNum)}` +
       queryString({ special_session: specialSession }),
+  );
+}
+
+export async function getLegislators(filters: { q?: string; year?: string }): Promise<LegislatorsResponse | null> {
+  return fetchKls<LegislatorsResponse>(
+    `/api/v1/areas/wyoming/legislators${queryString({ ...filters, limit: 150 })}`,
+  );
+}
+
+export async function getLegislatorVotingRecord(
+  memberKey: string,
+  year?: string,
+): Promise<LegislatorRecordResponse | null> {
+  return fetchKls<LegislatorRecordResponse>(
+    `/api/v1/areas/wyoming/legislators/${encodeURIComponent(memberKey)}${queryString({ year })}`,
   );
 }
 

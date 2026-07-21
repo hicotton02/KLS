@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AlertTriangle, ArrowLeft, CalendarDays, CheckCircle2, Clock3, ExternalLink, FileText } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CalendarDays, CheckCircle2, ChevronDown, Clock3, ExternalLink, FileText, Vote } from "lucide-react";
 import { notFound } from "next/navigation";
 import { formatScanTimestamp, getBillDetail, type Interpretation } from "../../../../../lib/kls";
 
@@ -17,6 +17,14 @@ function items(value: string[] | undefined) {
 function outcomeClass(outcome: string | null) {
   return ["active", "passed", "failed", "replaced"].includes(outcome ?? "") ? outcome : "active";
 }
+
+const voteLabels = {
+  yes: "Yes",
+  no: "No",
+  absent: "Absent",
+  excused: "Excused",
+  conflict: "Conflict",
+} as const;
 
 export default async function BillPage({ params, searchParams }: { params: RouteParams; searchParams: SearchParams }) {
   const { slug, year, billNum } = await params;
@@ -101,6 +109,58 @@ export default async function BillPage({ params, searchParams }: { params: Route
         </div>
         {data.bill.official_summary_text ? <div className="official-text"><h3>Official summary</h3><p>{data.bill.official_summary_text}</p></div> : null}
       </section>
+
+      {data.roll_calls?.length ? (
+        <section className="content-section" aria-labelledby="votes-title">
+          <div className="section-heading">
+            <div><p className="eyebrow">Wyoming roll calls</p><h2 id="votes-title">Recorded votes</h2></div>
+            <p>{data.roll_calls.length} roll call{data.roll_calls.length === 1 ? "" : "s"}</p>
+          </div>
+          <div className="roll-call-list">
+            {data.roll_calls.map((rollCall, index) => (
+              <details className="roll-call" key={rollCall.roll_call_key} open={index === 0}>
+                <summary>
+                  <Vote size={19} aria-hidden="true" />
+                  <span className="roll-call-summary">
+                    <strong>{rollCall.action || "Recorded vote"}</strong>
+                    <small>{rollCall.vote_date?.slice(0, 10) || "Date unavailable"} · {rollCall.chamber === "S" ? "Senate" : "House"}</small>
+                  </span>
+                  <span className="roll-call-tally" aria-label={`${rollCall.counts.yes} yes, ${rollCall.counts.no} no`}>
+                    <b>{rollCall.counts.yes}</b> yes <b>{rollCall.counts.no}</b> no
+                  </span>
+                  <ChevronDown className="roll-call-chevron" size={18} aria-hidden="true" />
+                </summary>
+                <div className="roll-call-body">
+                  <dl className="vote-counts">
+                    {Object.entries(voteLabels).map(([position, label]) => (
+                      <div key={position}><dt>{label}</dt><dd>{rollCall.counts[position as keyof typeof rollCall.counts]}</dd></div>
+                    ))}
+                  </dl>
+                  <div className="vote-groups">
+                    {Object.entries(voteLabels).map(([position, label]) => {
+                      const members = rollCall.members.filter((member) => member.vote === position);
+                      if (!members.length) return null;
+                      return (
+                        <div className={`vote-group vote-group-${position}`} key={position}>
+                          <h3>{label} <span>{members.length}</span></h3>
+                          <div className="vote-member-list">
+                            {members.map((member) => (
+                              <Link href={member.profile_href} key={member.member_key} title={`${member.title} ${member.name}'s voting record`}>
+                                <strong>{member.name}</strong>
+                                {member.district || member.party ? <small>{[member.party, member.district].filter(Boolean).join(" · ")}</small> : null}
+                              </Link>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </details>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {data.relationships.length ? (
         <section className="content-section" aria-labelledby="related-title">

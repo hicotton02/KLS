@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Clock3, ExternalLink, Filter } from "lucide-react";
+import { Clock3, ExternalLink, Filter, Users } from "lucide-react";
 import { notFound } from "next/navigation";
 import { BillList } from "../../components/BillList";
 import { getArea, lastScannedLabel } from "../../lib/kls";
@@ -32,11 +32,14 @@ export default async function AreaPage({ params, searchParams }: { params: Route
           <p className="eyebrow">{data.jurisdiction.kind === "federal" ? "Congress" : "State legislature"}</p>
           <h1>{data.jurisdiction.name}</h1>
           <p>{data.jurisdiction.description}</p>
-          {data.jurisdiction.source_url ? (
-            <a className="source-link" href={data.jurisdiction.source_url} target="_blank" rel="noreferrer">
-              {data.jurisdiction.source_name} <ExternalLink size={15} aria-hidden="true" />
-            </a>
-          ) : null}
+          <div className="area-links">
+            {data.jurisdiction.source_url ? (
+              <a className="source-link" href={data.jurisdiction.source_url} target="_blank" rel="noreferrer">
+                {data.jurisdiction.source_name} <ExternalLink size={15} aria-hidden="true" />
+              </a>
+            ) : null}
+            {slug === "wyoming" ? <Link className="source-link" href="/area/wyoming/legislators"><Users size={15} aria-hidden="true" /> Legislator voting records</Link> : null}
+          </div>
           <p className="scan-note"><Clock3 size={15} aria-hidden="true" /> {lastScannedLabel(data.jurisdiction.last_scanned_at)}</p>
         </div>
         <dl className="area-stats">
