@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Search, Scale, Users } from "lucide-react";
+import { Search, Scale } from "lucide-react";
 
 export function SiteHeader() {
   return (
@@ -11,7 +11,6 @@ export function SiteHeader() {
         </Link>
         <nav className="primary-nav" aria-label="Primary navigation">
           <Link href="/#browse">Browse states</Link>
-          <Link href="/area/wyoming/legislators"><Users size={17} aria-hidden="true" /> Wyoming votes</Link>
           <Link className="nav-search" href="/search"><Search size={17} aria-hidden="true" /> Search bills</Link>
         </nav>
       </div>

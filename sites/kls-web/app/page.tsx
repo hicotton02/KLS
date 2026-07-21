@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowRight, Landmark, ShieldCheck } from "lucide-react";
+import { ArrowRight, Clock3, Landmark, ShieldCheck } from "lucide-react";
 import { BillList } from "./components/BillList";
 import { SearchBox } from "./components/SearchBox";
 import { StateDirectory } from "./components/StateDirectory";
@@ -9,10 +9,6 @@ export default async function Home() {
   const overview = await getOverview();
   const states = overview.jurisdictions.filter((area) => area.kind === "state");
   const federal = overview.jurisdictions.find((area) => area.kind === "federal");
-  const currentBills = overview.jurisdictions.reduce(
-    (total, area) => total + (area.counts?.total ?? 0),
-    0,
-  );
   const latestScanAt = overview.jurisdictions.reduce<string | null>((latest, area) => {
     if (!area.last_scanned_at) return latest;
     if (!latest || Date.parse(area.last_scanned_at) > Date.parse(latest)) return area.last_scanned_at;
@@ -33,20 +29,13 @@ export default async function Home() {
             <SearchBox />
           </div>
 
-          <dl className="coverage-summary" aria-label="Current coverage">
+          <div className="latest-scan-summary" aria-label="Latest scan">
+            <Clock3 size={22} strokeWidth={1.8} aria-hidden="true" />
             <div>
-              <dt>Coverage areas</dt>
-              <dd>{overview.jurisdictions.length || 52}</dd>
+              <span>Latest scan</span>
+              <strong>{formatScanTimestamp(latestScanAt) ?? "Not yet scanned"}</strong>
             </div>
-            <div>
-              <dt>Current-session bills</dt>
-              <dd>{currentBills.toLocaleString()}</dd>
-            </div>
-            <div>
-              <dt>Latest scan</dt>
-              <dd className="scan-time">{formatScanTimestamp(latestScanAt) ?? "Not yet scanned"}</dd>
-            </div>
-          </dl>
+          </div>
         </div>
       </section>
 

@@ -42,8 +42,9 @@ test("server-renders the KLS home page", async () => {
 });
 
 test("contains product metadata and no starter or model details", async () => {
-  const [page, billPage, apiClient, layout, nextConfig, dockerfile, packageJson] = await Promise.all([
+  const [page, header, billPage, apiClient, layout, nextConfig, dockerfile, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/SiteHeader.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/area/[slug]/bill/[year]/[billNum]/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/kls.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
@@ -56,6 +57,8 @@ test("contains product metadata and no starter or model details", async () => {
   assert.doesNotMatch(packageJson, /react-loading-skeleton|starter/i);
   assert.match(page, /getOverview/);
   assert.match(page, /Latest scan/);
+  assert.doesNotMatch(page, /Coverage areas|Current-session bills/);
+  assert.doesNotMatch(header, /Wyoming votes|area\/wyoming\/legislators/);
   assert.match(billPage, /Last scanned/);
   assert.doesNotMatch(`${page}\n${billPage}\n${apiClient}`, /qwen|generator_model|interpretation_model/i);
   assert.match(layout, /Keeping Law Simple/);
