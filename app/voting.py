@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections import defaultdict
 from typing import Any
@@ -14,6 +15,8 @@ VOTE_POSITIONS = (
     ("excusedVotes", "excused"),
 )
 VOTE_POSITION_ORDER = {position: index for index, (_, position) in enumerate(VOTE_POSITIONS)}
+NAME_SUFFIXES = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}
+CHAMBER_TITLE_PATTERN = re.compile(r"^(?:speaker|president|president pro tempore)\s+", re.IGNORECASE)
 
 
 def normalize_chamber(value: object) -> str:
@@ -84,13 +87,14 @@ def _split_vote_names(raw_names: object, chamber_index: dict[str, Any]) -> list[
             candidates = by_last_name.get(label.casefold(), [])
             candidate = _matching_initial_candidate(candidates, possible_initials)
             next_is_known_last_name = possible_initials.casefold() in by_last_name
+            is_name_suffix = possible_initials.casefold() in NAME_SUFFIXES
             fallback_initial = (
                 not next_is_known_last_name
                 and 1 <= len(_name_initials(possible_initials)) <= 2
                 and possible_initials.replace(".", "").isalpha()
                 and possible_initials.upper() == possible_initials
             )
-            if candidate is not None or fallback_initial:
+            if candidate is not None or is_name_suffix or fallback_initial:
                 label = f"{label}, {possible_initials}"
                 index += 1
         labels.append(label)
@@ -107,12 +111,16 @@ def _resolve_legislator(
     by_full_name: dict[str, dict[str, Any]] = chamber_index.get("by_full_name", {})
     by_last_name: dict[str, list[dict[str, Any]]] = chamber_index.get("by_last_name", {})
 
-    candidate = by_full_name.get(label.casefold())
+    lookup_label = CHAMBER_TITLE_PATTERN.sub("", label).strip()
+    candidate = by_full_name.get(lookup_label.casefold())
     if candidate is None:
-        label_parts = [part.strip() for part in label.split(",", 1)]
+        label_parts = [part.strip() for part in lookup_label.split(",", 1)]
         candidates = by_last_name.get(label_parts[0].casefold(), [])
         if len(label_parts) == 2:
-            candidate = _matching_initial_candidate(candidates, label_parts[1])
+            if label_parts[1].casefold() in NAME_SUFFIXES and len(candidates) == 1:
+                candidate = candidates[0]
+            else:
+                candidate = _matching_initial_candidate(candidates, label_parts[1])
         elif len(candidates) == 1:
             candidate = candidates[0]
 
@@ -121,9 +129,13 @@ def _resolve_legislator(
     last_name = str((candidate or {}).get("lastName") or "").strip()
     display_name = str((candidate or {}).get("name") or "").strip()
     if not display_name:
-        display_name = " ".join(part for part in (first_name, last_name) if part) or label
+        display_name = " ".join(part for part in (first_name, last_name) if part) or lookup_label
 
-    member_key = f"wy-{source_legislator_id}" if source_legislator_id else f"wy-{chamber.casefold()}-{_slugify(label)}"
+    member_key = (
+        f"wy-{source_legislator_id}"
+        if source_legislator_id
+        else f"wy-{chamber.casefold()}-{_slugify(lookup_label)}"
+    )
     return {
         "member_key": member_key,
         "source_legislator_id": source_legislator_id or None,
@@ -177,6 +189,36 @@ def _roll_call_key(roll_call: dict[str, Any], chamber: str) -> tuple[str, str]:
     return f"{chamber.casefold()}-{hashlib.sha256(fingerprint.encode('utf-8')).hexdigest()[:16]}", ""
 
 
+def _roll_call_fingerprint(roll_call: dict[str, Any]) -> str:
+    structured_votes = sorted(
+        (
+            str(item.get("legislator") or "").strip(),
+            _normalize_vote_position(item.get("vote")),
+        )
+        for item in (roll_call.get("rollCallLegVoteDtos") or [])
+        if isinstance(item, dict)
+    )
+    payload = {
+        "vote_date": roll_call.get("voteDate"),
+        "vote_type": roll_call.get("voteType"),
+        "action": roll_call.get("action"),
+        "amendment_number": roll_call.get("amendmentNumber"),
+        "yes_count": roll_call.get("yesVotesCount"),
+        "no_count": roll_call.get("noVotesCount"),
+        "absent_count": roll_call.get("absentVotesCount"),
+        "conflict_count": roll_call.get("conflictVotesCount"),
+        "excused_count": roll_call.get("excusedVotesCount"),
+        "yes_votes": str(roll_call.get("yesVotes") or "").strip(),
+        "no_votes": str(roll_call.get("noVotes") or "").strip(),
+        "absent_votes": str(roll_call.get("absentVotes") or "").strip(),
+        "conflict_votes": str(roll_call.get("conflictVotes") or "").strip(),
+        "excused_votes": str(roll_call.get("excusedVotes") or "").strip(),
+        "structured_votes": structured_votes,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def build_wyoming_roll_calls(
     detail: dict[str, Any],
     legislators_by_chamber: dict[str, list[dict[str, Any]]] | None,
@@ -190,11 +232,26 @@ def build_wyoming_roll_calls(
     bill_num = str(detail.get("bill") or "").strip()
     special_session_value = detail.get("specialSessionValue")
 
+    roll_call_entries: list[tuple[dict[str, Any], str, str, str, str]] = []
+    fingerprints_by_key: defaultdict[str, set[str]] = defaultdict(set)
+    seen_events: set[tuple[str, str]] = set()
     for roll_call in detail.get("rollCalls") or []:
         if not isinstance(roll_call, dict):
             continue
         chamber = normalize_chamber(roll_call.get("chamber"))
-        roll_call_key, vote_id = _roll_call_key(roll_call, chamber)
+        base_roll_call_key, vote_id = _roll_call_key(roll_call, chamber)
+        fingerprint = _roll_call_fingerprint(roll_call)
+        event_key = (base_roll_call_key, fingerprint)
+        if event_key in seen_events:
+            continue
+        seen_events.add(event_key)
+        fingerprints_by_key[base_roll_call_key].add(fingerprint)
+        roll_call_entries.append((roll_call, chamber, base_roll_call_key, vote_id, fingerprint))
+
+    for roll_call, chamber, base_roll_call_key, vote_id, fingerprint in roll_call_entries:
+        roll_call_key = base_roll_call_key
+        if len(fingerprints_by_key[base_roll_call_key]) > 1:
+            roll_call_key = f"{base_roll_call_key}-{fingerprint[:12]}"
         chamber_index = roster_indexes.get(chamber, {})
         members: list[dict[str, Any]] = []
 

@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from app.http_retry import get_with_retries
+from app.http_retry import get_with_retries, post_with_retries
 from app.settings import Settings
 from app.text_utils import html_to_text, pdf_bytes_to_text
 
@@ -36,6 +36,7 @@ class WyomingApiClient:
             headers={"User-Agent": "keeping-law-simple/1.0"},
             timeout=self.settings.request_timeout_seconds,
         )
+        self._historical_roster_cache: dict[int, list[dict[str, Any]]] = {}
 
     def close(self) -> None:
         self.client.close()
@@ -64,8 +65,65 @@ class WyomingApiClient:
     def fetch_legislators(self, year: int, chamber: str) -> list[dict[str, Any]]:
         response = get_with_retries(self.client, f"/legislator/{year}/{chamber}")
         response.raise_for_status()
-        payload = response.json()
-        return payload if isinstance(payload, list) else []
+        current_payload = response.json()
+        current_legislators = current_payload if isinstance(current_payload, list) else []
+
+        historical_legislators = self._historical_roster_cache.get(year)
+        if historical_legislators is None:
+            historical_response = post_with_retries(
+                self.client,
+                "/legislator/search",
+                json={"serviceYearStart": str(year), "serviceYearEnd": str(year)},
+            )
+            historical_response.raise_for_status()
+            historical_payload = historical_response.json()
+            historical_legislators = [
+                item
+                for raw_item in (historical_payload if isinstance(historical_payload, list) else [])
+                if (item := self._normalize_historical_legislator(raw_item)) is not None
+            ]
+            self._historical_roster_cache[year] = historical_legislators
+
+        selected_chamber = chamber.strip().upper()
+        merged: dict[str, dict[str, Any]] = {}
+        for item in historical_legislators:
+            if str(item.get("district") or "").upper().startswith(selected_chamber):
+                merged[str(item.get("legID") or item.get("name"))] = dict(item)
+        for item in current_legislators:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("legID") or item.get("name"))
+            base = merged.get(key, {})
+            merged[key] = {**base, **{field: value for field, value in item.items() if value not in (None, "")}}
+        return sorted(merged.values(), key=lambda item: str(item.get("name") or "").casefold())
+
+    @staticmethod
+    def _normalize_historical_legislator(raw_item: object) -> dict[str, Any] | None:
+        if not isinstance(raw_item, dict):
+            return None
+        raw_name = str(raw_item.get("name") or "").strip()
+        parts = [part.strip() for part in raw_name.split(",") if part.strip()]
+        if len(parts) < 2:
+            return None
+
+        suffixes = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}
+        last_name = parts.pop(0)
+        suffix = ""
+        if parts and parts[0].casefold() in suffixes:
+            suffix = parts.pop(0)
+        elif parts and parts[-1].casefold() in suffixes:
+            suffix = parts.pop()
+        given_names = " ".join(parts).strip()
+        first_name = given_names.split()[0] if given_names else ""
+        display_name = " ".join(part for part in (given_names, last_name, suffix) if part)
+        return {
+            "firstName": first_name,
+            "lastName": last_name,
+            "name": display_name,
+            "legID": raw_item.get("legID"),
+            "party": None,
+            "district": raw_item.get("district"),
+        }
 
     def public_document_url(self, path: str | None) -> str | None:
         if not path:

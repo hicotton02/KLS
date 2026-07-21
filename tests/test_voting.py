@@ -1,4 +1,5 @@
 from app.voting import build_wyoming_roll_calls
+from app.wyoming_api import WyomingApiClient
 
 
 def test_build_wyoming_roll_calls_resolves_initialed_and_unique_names() -> None:
@@ -89,3 +90,108 @@ def test_build_wyoming_roll_calls_prefers_structured_member_votes() -> None:
         ("wy-1", "yes"),
         ("wy-2", "no"),
     ]
+
+
+def test_build_wyoming_roll_calls_handles_reused_vote_ids_and_exact_duplicates() -> None:
+    shared = {
+        "voteID": 77,
+        "chamber": "H",
+        "voteType": "F",
+        "yesVotesCount": 1,
+        "yesVotes": "Smith",
+        "noVotesCount": 0,
+        "noVotes": "",
+    }
+    detail = {
+        "year": 2026,
+        "bill": "HB0178",
+        "rollCalls": [
+            {**shared, "voteDate": "2026-03-10T10:00:00", "action": "H 3rd Reading:Passed"},
+            {**shared, "voteDate": "2026-03-11T10:00:00", "action": "Veto Override"},
+            {**shared, "voteDate": "2026-03-11T10:00:00", "action": "Veto Override"},
+        ],
+    }
+    rosters = {
+        "H": [
+            {
+                "firstName": "Scott",
+                "lastName": "Smith",
+                "name": "Scott Smith",
+                "legID": 2093,
+                "party": "R",
+                "district": "H05",
+            }
+        ]
+    }
+
+    first = build_wyoming_roll_calls(detail, rosters, timestamp="2026-07-21T00:00:00+00:00")
+    second = build_wyoming_roll_calls(detail, rosters, timestamp="2026-07-21T00:00:00+00:00")
+
+    assert len(first) == 2
+    assert len({roll_call["roll_call_key"] for roll_call in first}) == 2
+    assert all(roll_call["roll_call_key"].startswith("h-77-") for roll_call in first)
+    assert [roll_call["roll_call_key"] for roll_call in first] == [
+        roll_call["roll_call_key"] for roll_call in second
+    ]
+
+
+def test_build_wyoming_roll_calls_resolves_suffixes_and_chamber_titles() -> None:
+    detail = {
+        "year": 2023,
+        "bill": "HB0001",
+        "rollCalls": [
+            {
+                "voteID": 99,
+                "chamber": "H",
+                "voteDate": "2023-02-01T11:00:00",
+                "yesVotesCount": 2,
+                "yesVotes": "Burkhart, Jr, Speaker Sommers",
+                "noVotesCount": 0,
+                "noVotes": "",
+            }
+        ],
+    }
+    rosters = {
+        "H": [
+            {
+                "firstName": "Donald",
+                "lastName": "Burkhart",
+                "name": "Donald E Burkhart Jr",
+                "legID": 1973,
+                "district": "H15",
+            },
+            {
+                "firstName": "Albert",
+                "lastName": "Sommers",
+                "name": "Albert P Sommers Jr.",
+                "legID": 1991,
+                "district": "H20",
+            },
+        ]
+    }
+
+    roll_calls = build_wyoming_roll_calls(detail, rosters, timestamp="2026-07-21T00:00:00+00:00")
+
+    assert [(member["member_key"], member["legislator_name"]) for member in roll_calls[0]["members"]] == [
+        ("wy-1991", "Albert P Sommers Jr."),
+        ("wy-1973", "Donald E Burkhart Jr"),
+    ]
+
+
+def test_normalize_historical_legislator_name() -> None:
+    normalized = WyomingApiClient._normalize_historical_legislator(
+        {
+            "legID": "1973",
+            "name": "Burkhart, Jr, Donald E",
+            "district": "H15",
+        }
+    )
+
+    assert normalized == {
+        "firstName": "Donald",
+        "lastName": "Burkhart",
+        "name": "Donald E Burkhart Jr",
+        "legID": "1973",
+        "party": None,
+        "district": "H15",
+    }
