@@ -58,7 +58,7 @@ spec:
                 - --stage
                 - worker
                 - --limit-media
-                - "1"
+                - "4"
               env:
                 - name: PGPASSWORD
                   valueFrom:
