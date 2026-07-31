@@ -46,12 +46,15 @@ test("server-renders the KLS home page", async () => {
   assert.doesNotMatch(html, /codex-preview|taking shape|react-loading-skeleton/i);
 });
 
-test("renders the private Wyoming vote-explanation beta", async () => {
-  const response = await render("/beta/wyoming/vote-explanations");
+test("renders Wyoming vote explanations on the public route", async () => {
+  const response = await render(
+    "/area/wyoming/vote-explanations",
+    "https://www.keepinglawsimple.org",
+  );
   assert.equal(response.status, 200);
 
   const html = await response.text();
-  assert.match(html, /Private beta/);
+  assert.match(html, /Wyoming vote records/);
   assert.match(html, /Why did they vote that way\?/);
   assert.match(html, /Art Washut/);
   assert.match(html, /Pam Thayer/);
@@ -59,18 +62,31 @@ test("renders the private Wyoming vote-explanation beta", async () => {
   assert.match(html, /Scott Smith/);
   assert.match(html, /Couldn(?:'|&#x27;)t find a published reason/);
   assert.match(html, /youtube\.com\/watch\?v=X45rOkJsR2g&amp;t=8464s/);
+  assert.doesNotMatch(html, /Private beta/);
   assert.doesNotMatch(html, /model|confidence score|AI-generated/i);
 });
 
-test("keeps the beta off the public host and primary navigation", async () => {
-  const publicResponse = await render(
-    "/beta/wyoming/vote-explanations",
-    "https://www.keepinglawsimple.org",
-  );
-  assert.equal(publicResponse.status, 404);
+test("keeps vote explanations scoped to Wyoming and out of primary navigation", async () => {
+  const [oldBetaResponse, otherStateResponse] = await Promise.all([
+    render(
+      "/beta/wyoming/vote-explanations",
+      "https://www.keepinglawsimple.org",
+    ),
+    render(
+      "/area/colorado/vote-explanations",
+      "https://www.keepinglawsimple.org",
+    ),
+  ]);
+  assert.equal(oldBetaResponse.status, 404);
+  assert.equal(otherStateResponse.status, 404);
 
-  const header = await readFile(new URL("../app/components/SiteHeader.tsx", import.meta.url), "utf8");
+  const [header, areaPage] = await Promise.all([
+    readFile(new URL("../app/components/SiteHeader.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/area/[slug]/page.tsx", import.meta.url), "utf8"),
+  ]);
   assert.doesNotMatch(header, /vote-explanations|Wyoming votes/i);
+  assert.match(areaPage, /slug === "wyoming"/);
+  assert.match(areaPage, /href="\/area\/wyoming\/vote-explanations"/);
 });
 
 test("contains product metadata and no starter or model details", async () => {

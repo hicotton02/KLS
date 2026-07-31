@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Clock3, ExternalLink, Filter, Users } from "lucide-react";
+import { Clock3, ExternalLink, Filter, MessageSquareQuote, Users } from "lucide-react";
 import { notFound } from "next/navigation";
 import { BillList } from "../../components/BillList";
 import { getArea, lastScannedLabel } from "../../lib/kls";
@@ -39,6 +39,7 @@ export default async function AreaPage({ params, searchParams }: { params: Route
               </a>
             ) : null}
             {slug === "wyoming" ? <Link className="source-link" href="/area/wyoming/legislators"><Users size={15} aria-hidden="true" /> Legislator voting records</Link> : null}
+            {slug === "wyoming" ? <Link className="source-link" href="/area/wyoming/vote-explanations"><MessageSquareQuote size={15} aria-hidden="true" /> Why lawmakers voted</Link> : null}
           </div>
           <p className="scan-note"><Clock3 size={15} aria-hidden="true" /> {lastScannedLabel(data.jurisdiction.last_scanned_at)}</p>
         </div>

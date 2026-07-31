@@ -1,4 +1,4 @@
-export type VoteExplanationExample = {
+export type VoteExplanation = {
   lawmaker: string;
   party: string;
   district: string;
@@ -12,7 +12,7 @@ export type VoteExplanationExample = {
 
 const houseVideo = "https://www.youtube.com/watch?v=X45rOkJsR2g";
 
-export const wyomingVoteExplanationBeta = {
+export const wyomingVoteExplanations = {
   latestVideoChecked: "March 11, 2026",
   bill: {
     number: "SF 101",
@@ -70,5 +70,5 @@ export const wyomingVoteExplanationBeta = {
       sourceUrl: `${houseVideo}&t=8451s`,
       sourceAction: "Review the debate",
     },
-  ] satisfies VoteExplanationExample[],
+  ] satisfies VoteExplanation[],
 };
