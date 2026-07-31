@@ -19,6 +19,7 @@ from yt_dlp.utils import DownloadError
 from app.db import (
     count_bill_vote_explanations,
     init_db,
+    list_bill_roll_calls,
     list_bill_roll_call_targets,
     list_legislative_media,
     list_roll_calls_for_session,
@@ -603,7 +604,12 @@ def seed_curated_wyoming_examples() -> int:
     )
     if media is None:
         return 0
-    bill_roll_calls = [item for item in _media_roll_calls(media) if item.get("bill_num") == "SF0101"]
+    bill_roll_calls = list_bill_roll_calls(
+        "wy",
+        2026,
+        "SF0101",
+        special_session_value=media.get("special_session_value"),
+    )
     examples = [
         {
             "name": "Art Washut",

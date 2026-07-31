@@ -12,7 +12,11 @@ from app.db import (
     upsert_legislative_media,
 )
 from app.main import app
-from app.wyoming_vote_explanations import find_bill_sections, parse_youtube_json3
+from app.wyoming_vote_explanations import (
+    find_bill_sections,
+    parse_youtube_json3,
+    seed_curated_wyoming_examples,
+)
 
 
 def _seed_bill_and_vote() -> None:
@@ -91,6 +95,97 @@ def test_parse_youtube_json3_and_find_bill_sections() -> None:
     assert "Senate file 101" in segments[0]["text"]
     sections = find_bill_sections(segments, ["SF0101", "HB0002"])
     assert sections == [{"bill_num": "SF0101", "start": 0, "end": 1800}]
+
+
+def test_curated_example_uses_final_bill_vote_after_statement_date() -> None:
+    with connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO bills (
+                state, year, special_session_key, bill_num, bill_type, catch_title,
+                bill_title, outcome, source_synced_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "wy",
+                2026,
+                -1,
+                "SF0101",
+                "SF",
+                "Firearms preemption",
+                "Firearms preemption",
+                "passed",
+                "2026-03-09T18:00:00+00:00",
+                "2026-03-09T18:00:00+00:00",
+                "2026-03-09T18:00:00+00:00",
+            ),
+        )
+        connection.commit()
+    replace_bill_roll_calls(
+        "wy",
+        2026,
+        "SF0101",
+        payloads=[
+            {
+                "roll_call_key": "h-5520",
+                "vote_id": "5520",
+                "chamber": "H",
+                "vote_date": "2026-03-09T14:00:00",
+                "vote_type": "Third Reading",
+                "action": "H 3rd Reading:Passed 40-21-1-0-0",
+                "amendment_number": None,
+                "yes_count": 40,
+                "no_count": 21,
+                "absent_count": 1,
+                "conflict_count": 0,
+                "excused_count": 0,
+                "source_synced_at": "2026-03-09T18:00:00+00:00",
+                "created_at": "2026-03-09T18:00:00+00:00",
+                "updated_at": "2026-03-09T18:00:00+00:00",
+                "members": [
+                    {
+                        "member_key": f"wy-{index}",
+                        "source_legislator_id": str(index),
+                        "legislator_name": name,
+                        "vote_label": "N",
+                        "party": "Republican",
+                        "district": f"House District {index}",
+                        "vote_position": "no",
+                    }
+                    for index, name in enumerate(
+                        ["Art Washut", "Pam Thayer", "Elissa Campbell"],
+                        start=1,
+                    )
+                ],
+            }
+        ],
+    )
+    upsert_legislative_media(
+        {
+            "state": "wy",
+            "year": 2026,
+            "special_session_value": None,
+            "session_date": "2026-03-05",
+            "session_day_number": "20th",
+            "chamber": "H",
+            "time_of_day": "AM",
+            "display_order": 10,
+            "source_url": "https://youtube.com/live/X45rOkJsR2g?feature=share",
+            "source_kind": "youtube",
+            "external_id": "X45rOkJsR2g",
+            "mime_type": "application/octet-stream",
+            "title": "Wyoming House floor session, 2026-03-05 AM",
+        }
+    )
+
+    assert seed_curated_wyoming_examples() == 3
+    explanations = list_bill_vote_explanations("wy", 2026, "SF0101")
+    assert {item["lawmaker_name"] for item in explanations} == {
+        "Art Washut",
+        "Pam Thayer",
+        "Elissa Campbell",
+    }
+    assert {item["roll_call_key"] for item in explanations} == {"h-5520"}
 
 
 def test_explanations_are_stored_and_exposed_without_model_metadata() -> None:
