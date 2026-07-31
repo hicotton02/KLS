@@ -5,6 +5,8 @@ metadata:
   namespace: keeping-law-simple
 spec:
   ttlSecondsAfterFinished: 86400
+  backoffLimit: 1
+  activeDeadlineSeconds: 7200
   template:
     spec:
       automountServiceAccountToken: false
@@ -15,55 +17,35 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
-      initContainers:
-        - name: init-data-permissions
-          image: busybox:1.36
-          command:
-            - sh
-            - -lc
-            - mkdir -p /data/geoip && chown -R 10001:10001 /data && chmod -R ug+rwX /data
-          volumeMounts:
-            - name: data
-              mountPath: /data
-          securityContext:
-            runAsUser: 0
-            runAsGroup: 0
-            runAsNonRoot: false
-            allowPrivilegeEscalation: false
       restartPolicy: Never
       containers:
         - name: reinterpret
-          image: keeping-law-simple/web:20260421l
+          image: registry.skazproconsulting.com/keeping-law-simple/web:20260731-localtime1@sha256:bf55cb5144495b6aaaa7058b29290780720df27d5f00a33b129851787d1fdf72
           imagePullPolicy: IfNotPresent
           command:
             [
               "python",
               "-m",
               "app.cli",
-              "sync",
+              "repair-missing-interpretations",
+              "--state",
+              "wy",
               "--years",
-              "2026",
-              "--skip-alaska",
-              "--skip-kansas",
-              "--skip-alabama",
-              "--skip-arizona",
-              "--skip-connecticut",
-              "--skip-florida",
-              "--skip-rhode-island",
-              "--skip-minnesota",
-              "--skip-missouri",
-              "--skip-west-virginia",
-              "--skip-colorado",
-              "--skip-tennessee",
-              "--skip-mississippi",
-              "--skip-federal",
-              "--skip-relationships"
+              "2026"
             ]
           envFrom:
             - configMapRef:
                 name: keeping-law-simple-config
             - secretRef:
                 name: keeping-law-simple-secrets
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keeping-law-simple-postgres-secrets
+                  key: KLS_POSTGRES_PASSWORD
+            - name: KLS_DATABASE_URL
+              value: postgresql://kls@keeping-law-simple-postgres.keeping-law-simple.svc.cluster.local:5432/kls
           volumeMounts:
             - name: data
               mountPath: /data
@@ -77,11 +59,11 @@ spec:
                 - ALL
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
-            limits:
-              cpu: 1000m
+              cpu: 500m
               memory: 1Gi
+            limits:
+              cpu: "4"
+              memory: 4Gi
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -89,8 +71,9 @@ spec:
         - name: tmp
           emptyDir: {}
       nodeSelector:
-        kubernetes.io/hostname: cp
+        kubernetes.io/hostname: gpu2
       tolerations:
-        - key: node-role.kubernetes.io/control-plane
-          operator: Exists
+        - key: nvidia.com/gpu
+          operator: Equal
+          value: rtx5090-lab
           effect: NoSchedule

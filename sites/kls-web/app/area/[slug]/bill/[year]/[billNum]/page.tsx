@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { AlertTriangle, ArrowLeft, CalendarDays, CheckCircle2, ChevronDown, Clock3, ExternalLink, FileText, MessageSquareQuote, PlayCircle, SearchX, Vote } from "lucide-react";
 import { notFound } from "next/navigation";
-import { formatScanTimestamp, getBillDetail, type Interpretation } from "../../../../../lib/kls";
+import { formatBillDate, formatScanTimestamp, getBillDetail, type Interpretation } from "../../../../../lib/kls";
 
 type RouteParams = Promise<{ slug: string; year: string; billNum: string }>;
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
@@ -59,7 +59,7 @@ export default async function BillPage({ params, searchParams }: { params: Route
         </div>
         <div className="scan-stamp">
           <Clock3 size={20} aria-hidden="true" />
-          <span><strong>Last scanned</strong><small>{formatScanTimestamp(data.jurisdiction.last_scanned_at) ?? "Not yet scanned"}</small></span>
+          <span><strong>Last scanned</strong><small>{formatScanTimestamp(data.jurisdiction.last_scanned_at, data.jurisdiction.state_code) ?? "Not yet scanned"}</small></span>
         </div>
       </header>
 
@@ -79,8 +79,8 @@ export default async function BillPage({ params, searchParams }: { params: Route
           <dl>
             <div><dt>Sponsor</dt><dd>{data.bill.sponsor || "Not listed"}</dd></div>
             <div><dt>Last action</dt><dd>{data.bill.last_action || "Not listed"}</dd></div>
-            <div><dt>Last action date</dt><dd>{data.bill.last_action_date || "Not listed"}</dd></div>
-            {data.bill.effective_date ? <div><dt>Effective date</dt><dd>{data.bill.effective_date}</dd></div> : null}
+            <div><dt>Last action date</dt><dd>{formatBillDate(data.bill.last_action_date) || "Not listed"}</dd></div>
+            {data.bill.effective_date ? <div><dt>Effective date</dt><dd>{formatBillDate(data.bill.effective_date)}</dd></div> : null}
           </dl>
         </aside>
       </section>
@@ -116,7 +116,7 @@ export default async function BillPage({ params, searchParams }: { params: Route
         <section className="content-section" aria-labelledby="vote-reasons-title">
           <div className="section-heading">
             <div><p className="eyebrow">Public statements</p><h2 id="vote-reasons-title">Why lawmakers voted</h2></div>
-            {explanationScan?.last_scanned_at ? <p>Last checked {formatScanTimestamp(explanationScan.last_scanned_at, true)}</p> : null}
+            {explanationScan?.last_scanned_at ? <p>Last checked {formatScanTimestamp(explanationScan.last_scanned_at, data.jurisdiction.state_code, true)}</p> : null}
           </div>
 
           {voteExplanations.length ? (

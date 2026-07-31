@@ -115,6 +115,18 @@ class RetagStats:
     tagged: int = 0
 
 
+@dataclass
+class InterpretationRepairStats:
+    state: str
+    years: list[int]
+    seen: int = 0
+    skipped: int = 0
+    repaired: int = 0
+    validated: int = 0
+    fallback_interpretations: int = 0
+    failed: int = 0
+
+
 @dataclass(frozen=True)
 class CompletedBillSync:
     index_key: tuple[int, int, str]
@@ -3731,6 +3743,95 @@ def retag_bills(
     return stats
 
 
+def repair_missing_interpretations(
+    *,
+    state: str,
+    years: list[int] | None = None,
+    limit: int | None = None,
+    logger: Logger | None = None,
+) -> InterpretationRepairStats:
+    init_db()
+    settings = get_settings()
+    log = logger or (lambda message: None)
+    selected_years = years or list_years(state)
+    stats = InterpretationRepairStats(state=state, years=list(selected_years))
+
+    for year in selected_years:
+        log(f"Checking {state} bill summaries for {year}")
+        for listed_bill in list_bills(state, year):
+            if limit is not None and stats.repaired + stats.failed >= limit:
+                return stats
+            stats.seen += 1
+            bill_num = str(listed_bill.get("bill_num") or "")
+            bill = get_bill(
+                state,
+                year,
+                bill_num,
+                special_session_value=listed_bill.get("special_session_value"),
+            )
+            if bill is None:
+                stats.failed += 1
+                log(f"Could not reload {bill_num} ({year}) from storage")
+                continue
+
+            existing_interpretation = bill.get("interpretation_json")
+            if isinstance(existing_interpretation, dict) and _has_interpretation_content(existing_interpretation):
+                stats.skipped += 1
+                continue
+
+            try:
+                prompt_bill = {
+                    "bill": bill_num,
+                    "catchTitle": bill.get("catch_title"),
+                    "billTitle": bill.get("bill_title"),
+                    "sponsor": bill.get("sponsor"),
+                    "lastAction": bill.get("last_action"),
+                    "lastActionDate": bill.get("last_action_date"),
+                    "effectiveDate": bill.get("effective_date"),
+                }
+                status_info = {
+                    "label": str(bill.get("status_label") or "Status pending"),
+                    "explanation": str(bill.get("status_explainer") or ""),
+                    "outcome": str(bill.get("outcome") or "active"),
+                }
+                interpretation, _, validated, fallback_interpretations = _interpret_bill_text(
+                    settings=settings,
+                    bill=prompt_bill,
+                    status_info=status_info,
+                    official_summary_text=str(bill.get("official_summary_text") or ""),
+                    official_digest_text=str(bill.get("official_digest_text") or ""),
+                    current_bill_text=str(bill.get("current_bill_text") or ""),
+                )
+                amendments = list_bill_amendments(
+                    state,
+                    year,
+                    bill_num,
+                    special_session_value=bill.get("special_session_value"),
+                )
+                bill_tags = extract_bill_tags(
+                    catch_title=str(bill.get("catch_title") or ""),
+                    sponsor=str(bill.get("sponsor") or ""),
+                    official_summary_text=str(bill.get("official_summary_text") or ""),
+                    official_digest_text=str(bill.get("official_digest_text") or ""),
+                    interpretation=interpretation,
+                    amendment_snippets=_amendment_search_snippets(amendments),
+                )
+                payload = dict(bill)
+                payload["interpretation_json"] = interpretation
+                payload["bill_tags_json"] = bill_tags
+                payload["search_blob"] = _build_search_blob(payload, interpretation, bill_tags, amendments)
+                payload["updated_at"] = iso_now()
+                upsert_bill(payload)
+                stats.repaired += 1
+                stats.validated += validated
+                stats.fallback_interpretations += fallback_interpretations
+                log(f"Restored summary for {bill_num} ({year})")
+            except Exception as exc:  # noqa: BLE001
+                stats.failed += 1
+                log(f"Failed to restore summary for {bill_num} ({year}): {exc}")
+    return stats
+
+
 def stats_as_json(stats: SyncStats) -> str:
     return json.dumps(asdict(stats), indent=2)
 
@@ -4232,6 +4333,24 @@ def _reusable_interpretation(
     return dict(interpretation)
 
 
+def _interpretation_for_sync(
+    existing_bill: dict[str, Any] | None,
+    source_hash: str,
+    current_model: str,
+    *,
+    skip_interpretation: bool,
+) -> dict[str, Any] | None:
+    if skip_interpretation and existing_bill is not None:
+        interpretation = existing_bill.get("interpretation_json")
+        if isinstance(interpretation, dict) and interpretation:
+            preserved = dict(interpretation)
+            if str(existing_bill.get("source_hash") or "") != source_hash:
+                preserved["fact_check_status"] = "stale"
+                preserved["fact_check_result"] = "source-changed"
+            return preserved
+    return _reusable_interpretation(existing_bill, source_hash, current_model)
+
+
 def _reusable_amendment_interpretation(
     existing_amendment: dict[str, Any] | None,
     source_hash: str,
@@ -4268,11 +4387,11 @@ def _complete_state_bill(
     source_hash = str(base_payload.get("source_hash") or "")
     payload = dict(base_payload)
     current_bill_text = str(payload.get("current_bill_text") or "")
-    reusable = _reusable_interpretation(
+    reusable = _interpretation_for_sync(
         existing_bill,
         source_hash,
         settings.ollama_model,
-        require_model_match=not skip_interpretation,
+        skip_interpretation=skip_interpretation,
     )
 
     api = None
@@ -4471,11 +4590,11 @@ def _complete_federal_bill(
     existing_bill: dict[str, Any] | None = None,
 ) -> CompletedBillSync:
     source_hash = str(base_payload.get("source_hash") or "")
-    interpretation = _reusable_interpretation(
+    interpretation = _interpretation_for_sync(
         existing_bill,
         source_hash,
         settings.ollama_model,
-        require_model_match=not skip_interpretation,
+        skip_interpretation=skip_interpretation,
     )
     interpreted = 0
     validated = 0

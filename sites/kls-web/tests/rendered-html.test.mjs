@@ -63,6 +63,20 @@ test("renders Wyoming vote explanations on the public route", async () => {
   assert.doesNotMatch(html, /model|confidence score|AI-generated/i);
 });
 
+test("renders Wyoming scan and bill dates for regular people", async () => {
+  const response = await render(
+    "/area/wyoming/bill/2026/SF0001",
+    "https://www.keepinglawsimple.org",
+  );
+  assert.equal(response.status, 200);
+
+  const html = await response.text();
+  assert.match(html, /Last scanned/);
+  assert.match(html, /Mar 9, 2026/);
+  assert.match(html, /Jul 1, 2026/);
+  assert.doesNotMatch(html, /\bUTC\b|2026-03-09T00:00:00/);
+});
+
 test("keeps vote explanations scoped to Wyoming and out of primary navigation", async () => {
   const [oldBetaResponse, otherStateResponse] = await Promise.all([
     render(
@@ -109,6 +123,7 @@ test("contains product metadata and no starter or model details", async () => {
   assert.match(billPage, /Why lawmakers voted/);
   assert.match(billPage, /Couldn&apos;t find a published reason/);
   assert.doesNotMatch(`${page}\n${billPage}\n${apiClient}`, /qwen|generator_model|interpretation_model/i);
+  assert.match(apiClient, /wy: "America\/Denver"/);
   assert.match(layout, /Keeping Law Simple/);
   assert.doesNotMatch(layout, /codex-preview|_sites-preview|Starter Project/i);
   assert.match(nextConfig, /output: "standalone"/);

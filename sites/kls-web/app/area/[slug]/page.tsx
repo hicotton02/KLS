@@ -41,7 +41,7 @@ export default async function AreaPage({ params, searchParams }: { params: Route
             {slug === "wyoming" ? <Link className="source-link" href="/area/wyoming/legislators"><Users size={15} aria-hidden="true" /> Legislator voting records</Link> : null}
             {slug === "wyoming" ? <Link className="source-link" href="/area/wyoming/vote-explanations"><MessageSquareQuote size={15} aria-hidden="true" /> Why lawmakers voted</Link> : null}
           </div>
-          <p className="scan-note"><Clock3 size={15} aria-hidden="true" /> {lastScannedLabel(data.jurisdiction.last_scanned_at)}</p>
+          <p className="scan-note"><Clock3 size={15} aria-hidden="true" /> {lastScannedLabel(data.jurisdiction.last_scanned_at, data.jurisdiction.state_code)}</p>
         </div>
         <dl className="area-stats">
           <div><dt>Total</dt><dd>{data.counts.total.toLocaleString()}</dd></div>

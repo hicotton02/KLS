@@ -7,6 +7,7 @@ from dataclasses import asdict, is_dataclass
 from app.db import init_db
 from app.settings import get_settings
 from app.sync_service import (
+    repair_missing_interpretations,
     retag_bills,
     sync_alabama,
     sync_alaska,
@@ -90,6 +91,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also generate plain-language interpretations during the history import",
     )
+
+    repair_parser = subparsers.add_parser(
+        "repair-missing-interpretations",
+        help="Generate summaries only for stored bills that do not already have one",
+    )
+    repair_parser.add_argument("--state", default="wy", help="Jurisdiction code to repair, like wy or us")
+    repair_parser.add_argument("--years", help="Comma-separated list of years or Congress numbers")
+    repair_parser.add_argument("--limit", type=int, help="Optional max number of missing summaries to repair")
 
     explanation_parser = subparsers.add_parser(
         "backfill-wyoming-explanations",
@@ -472,6 +481,19 @@ def main() -> None:
             limit=args.limit,
             skip_interpretation=not args.with_interpretation,
             skip_relationships=True,
+            logger=print,
+        )
+        print(json.dumps(asdict(summary), indent=2))
+        return
+
+    if args.command == "repair-missing-interpretations":
+        years = None
+        if args.years:
+            years = [int(item.strip()) for item in args.years.split(",") if item.strip()]
+        summary = repair_missing_interpretations(
+            state=str(args.state or "wy").strip().lower(),
+            years=years,
+            limit=args.limit,
             logger=print,
         )
         print(json.dumps(asdict(summary), indent=2))

@@ -1,10 +1,16 @@
+import json
+
+import app.sync_service as sync_service
+from app.db import connect, get_bill
 from app.sync_service import (
     FACT_CHECK_VERSION,
     _compute_source_hash,
     _fallback_interpretation,
+    _interpretation_for_sync,
     _mark_validated_interpretation,
     _needs_refresh,
     _reusable_interpretation,
+    repair_missing_interpretations,
 )
 
 
@@ -153,6 +159,119 @@ def test_reusable_interpretation_is_not_kept_when_model_changes() -> None:
     reused = _reusable_interpretation(existing, "same-hash", "qwen3.5:27b")
 
     assert reused is None
+
+
+def test_source_only_sync_preserves_interpretation_when_source_changes() -> None:
+    existing = {
+        "source_hash": "old-hash",
+        "interpretation_json": {
+            "plain_language_title": "Education funding",
+            "one_sentence_summary": "This bill changes school funding rules.",
+            "generator_model": "older-model",
+        },
+    }
+
+    reused = _interpretation_for_sync(
+        existing,
+        "new-hash",
+        "current-model",
+        skip_interpretation=True,
+    )
+
+    assert reused is not None
+    assert reused["one_sentence_summary"] == "This bill changes school funding rules."
+    assert reused["fact_check_status"] == "stale"
+    assert reused["fact_check_result"] == "source-changed"
+
+
+def test_interpreting_sync_refreshes_interpretation_when_source_changes() -> None:
+    existing = {
+        "source_hash": "old-hash",
+        "interpretation_json": {
+            "one_sentence_summary": "This bill changes school funding rules.",
+            "generator_model": "current-model",
+        },
+    }
+
+    reused = _interpretation_for_sync(
+        existing,
+        "new-hash",
+        "current-model",
+        skip_interpretation=False,
+    )
+
+    assert reused is None
+
+
+def test_repair_missing_interpretations_only_repairs_blank_summaries(monkeypatch) -> None:
+    existing_summary = {
+        "plain_language_title": "Existing title",
+        "one_sentence_summary": "Keep this summary.",
+    }
+    with connect() as connection:
+        connection.executemany(
+            """
+            INSERT INTO bills (
+                state, year, special_session_key, bill_num, catch_title,
+                official_summary_text, interpretation_json, source_synced_at,
+                created_at, updated_at
+            ) VALUES (?, ?, -1, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "wy",
+                    2026,
+                    "HB0001",
+                    "School funding",
+                    "This bill changes school funding rules.",
+                    None,
+                    "2026-07-31T12:00:00+00:00",
+                    "2026-07-31T12:00:00+00:00",
+                    "2026-07-31T12:00:00+00:00",
+                ),
+                (
+                    "wy",
+                    2026,
+                    "HB0002",
+                    "Teacher pay",
+                    "This bill changes teacher pay.",
+                    json.dumps(existing_summary),
+                    "2026-07-31T12:00:00+00:00",
+                    "2026-07-31T12:00:00+00:00",
+                    "2026-07-31T12:00:00+00:00",
+                ),
+            ],
+        )
+        connection.commit()
+
+    calls: list[str] = []
+
+    def fake_interpret(**kwargs):
+        calls.append(str(kwargs["bill"]["bill"]))
+        return (
+            {
+                "plain_language_title": "School funding",
+                "one_sentence_summary": "This bill changes school funding rules.",
+                "what_it_does": ["It changes school funding rules."],
+            },
+            1,
+            1,
+            0,
+        )
+
+    monkeypatch.setattr(sync_service, "_interpret_bill_text", fake_interpret)
+
+    stats = repair_missing_interpretations(state="wy", years=[2026])
+
+    repaired = get_bill("wy", 2026, "HB0001")
+    preserved = get_bill("wy", 2026, "HB0002")
+    assert stats.repaired == 1
+    assert stats.skipped == 1
+    assert calls == ["HB0001"]
+    assert repaired is not None
+    assert repaired["interpretation_json"]["one_sentence_summary"] == "This bill changes school funding rules."
+    assert preserved is not None
+    assert preserved["interpretation_json"] == existing_summary
 
 
 def test_source_hash_ignores_status_only_changes() -> None:

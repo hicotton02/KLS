@@ -25,7 +25,7 @@ export function StateDirectory({ areas }: { areas: Jurisdiction[] }) {
           <Link className="state-link" href={`/area/${area.slug}`} key={area.slug}>
             <span>
               <strong>{area.name}</strong>
-              <small>{lastScannedLabel(area.last_scanned_at, true)}</small>
+              <small>{lastScannedLabel(area.last_scanned_at, area.state_code, true)}</small>
             </span>
             <ArrowRight size={17} aria-hidden="true" />
           </Link>

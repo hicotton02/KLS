@@ -18,7 +18,7 @@ export default async function WyomingVoteExplanationsPage({ searchParams }: { se
   const query = await searchParams;
   const selectedYear = first(query.year);
   const data = await getVoteExplanations(selectedYear);
-  const latestScan = formatScanTimestamp(data.last_scanned_at);
+  const latestScan = formatScanTimestamp(data.last_scanned_at, data.jurisdiction.state_code);
 
   return (
     <main className="page-main beta-page">

@@ -430,7 +430,70 @@ export function billHref(bill: BillSummary) {
   return `/area/${bill.area_slug}/bill/${bill.year}/${encodeURIComponent(bill.bill_num)}${query}`;
 }
 
-export function formatScanTimestamp(value: string | null | undefined, compact = false) {
+const JURISDICTION_TIME_ZONES: Record<string, string> = {
+  al: "America/Chicago",
+  ak: "America/Anchorage",
+  az: "America/Phoenix",
+  ar: "America/Chicago",
+  ca: "America/Los_Angeles",
+  co: "America/Denver",
+  ct: "America/New_York",
+  de: "America/New_York",
+  dc: "America/New_York",
+  fl: "America/New_York",
+  ga: "America/New_York",
+  hi: "Pacific/Honolulu",
+  id: "America/Boise",
+  il: "America/Chicago",
+  in: "America/Indiana/Indianapolis",
+  ia: "America/Chicago",
+  ks: "America/Chicago",
+  ky: "America/New_York",
+  la: "America/Chicago",
+  me: "America/New_York",
+  md: "America/New_York",
+  ma: "America/New_York",
+  mi: "America/Detroit",
+  mn: "America/Chicago",
+  ms: "America/Chicago",
+  mo: "America/Chicago",
+  mt: "America/Denver",
+  ne: "America/Chicago",
+  nv: "America/Los_Angeles",
+  nh: "America/New_York",
+  nj: "America/New_York",
+  nm: "America/Denver",
+  ny: "America/New_York",
+  nc: "America/New_York",
+  nd: "America/Chicago",
+  oh: "America/New_York",
+  ok: "America/Chicago",
+  or: "America/Los_Angeles",
+  pa: "America/New_York",
+  ri: "America/New_York",
+  sc: "America/New_York",
+  sd: "America/Chicago",
+  tn: "America/Chicago",
+  tx: "America/Chicago",
+  ut: "America/Denver",
+  vt: "America/New_York",
+  va: "America/New_York",
+  wa: "America/Los_Angeles",
+  wv: "America/New_York",
+  wi: "America/Chicago",
+  wy: "America/Denver",
+  us: "America/New_York",
+};
+
+function jurisdictionTimeZone(stateCode: string | null | undefined) {
+  return JURISDICTION_TIME_ZONES[(stateCode || "us").toLowerCase()] ?? JURISDICTION_TIME_ZONES.us;
+}
+
+export function formatScanTimestamp(
+  value: string | null | undefined,
+  stateCode: string | null | undefined,
+  compact = false,
+) {
   if (!value) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
@@ -440,12 +503,35 @@ export function formatScanTimestamp(value: string | null | undefined, compact = 
     year: compact ? undefined : "numeric",
     hour: "numeric",
     minute: "2-digit",
-    timeZone: "UTC",
-    timeZoneName: "short",
+    timeZone: jurisdictionTimeZone(stateCode),
   }).format(date);
 }
 
-export function lastScannedLabel(value: string | null | undefined, compact = false) {
-  const timestamp = formatScanTimestamp(value, compact);
+export function lastScannedLabel(
+  value: string | null | undefined,
+  stateCode: string | null | undefined,
+  compact = false,
+) {
+  const timestamp = formatScanTimestamp(value, stateCode, compact);
   return timestamp ? `Last scanned ${timestamp}` : "Not yet scanned";
+}
+
+export function formatBillDate(value: string | null | undefined) {
+  if (!value) return null;
+  const normalized = value.trim();
+  const isoMatch = normalized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  const usMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  const parts = isoMatch
+    ? [Number(isoMatch[1]), Number(isoMatch[2]), Number(isoMatch[3])]
+    : usMatch
+      ? [Number(usMatch[3]), Number(usMatch[1]), Number(usMatch[2])]
+      : null;
+  if (!parts) return normalized;
+  const date = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 12));
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(date);
 }

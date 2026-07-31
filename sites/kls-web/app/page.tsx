@@ -9,9 +9,9 @@ export default async function Home() {
   const overview = await getOverview();
   const states = overview.jurisdictions.filter((area) => area.kind === "state");
   const federal = overview.jurisdictions.find((area) => area.kind === "federal");
-  const latestScanAt = overview.jurisdictions.reduce<string | null>((latest, area) => {
+  const latestScanArea = overview.jurisdictions.reduce<(typeof overview.jurisdictions)[number] | null>((latest, area) => {
     if (!area.last_scanned_at) return latest;
-    if (!latest || Date.parse(area.last_scanned_at) > Date.parse(latest)) return area.last_scanned_at;
+    if (!latest?.last_scanned_at || Date.parse(area.last_scanned_at) > Date.parse(latest.last_scanned_at)) return area;
     return latest;
   }, null);
 
@@ -33,7 +33,7 @@ export default async function Home() {
             <Clock3 size={22} strokeWidth={1.8} aria-hidden="true" />
             <div>
               <span>Latest scan</span>
-              <strong>{formatScanTimestamp(latestScanAt) ?? "Not yet scanned"}</strong>
+              <strong>{formatScanTimestamp(latestScanArea?.last_scanned_at, latestScanArea?.state_code) ?? "Not yet scanned"}</strong>
             </div>
           </div>
         </div>
@@ -47,7 +47,7 @@ export default async function Home() {
           <p className="eyebrow">Federal</p>
           <h2 id="federal-title">Congress, without the fog.</h2>
           <p>{federal?.description ?? "Recent federal bills, status, and source-checked summaries."}</p>
-          <p className="scan-note">{lastScannedLabel(federal?.last_scanned_at)}</p>
+          <p className="scan-note">{lastScannedLabel(federal?.last_scanned_at, federal?.state_code)}</p>
         </div>
         <Link className="text-link" href="/area/federal">
           Browse Congress <ArrowRight size={18} aria-hidden="true" />
