@@ -120,6 +120,33 @@ export type RollCall = {
   members: RollCallMember[];
 };
 
+export type VoteExplanation = {
+  member_key: string;
+  name: string;
+  party: string | null;
+  district: string | null;
+  chamber: string;
+  title: string;
+  vote: "yes" | "no";
+  roll_call_key: string;
+  vote_date: string | null;
+  action: string | null;
+  reason: string;
+  statement_date: string | null;
+  profile_href: string;
+  source: {
+    label: string;
+    url: string;
+    title: string | null;
+    start_seconds: number;
+  };
+};
+
+export type VoteExplanationScan = {
+  status: "pending" | "partial" | "complete" | "needs_transcription" | "source_unavailable";
+  last_scanned_at: string | null;
+} | null;
+
 export type BillDetailResponse = {
   jurisdiction: Jurisdiction;
   bill: BillSummary & {
@@ -134,6 +161,8 @@ export type BillDetailResponse = {
   official_links: Record<string, string | null>;
   actions: { statusDate?: string; statusMessage?: string; location?: string }[];
   roll_calls: RollCall[];
+  vote_explanations: VoteExplanation[];
+  vote_explanation_scan: VoteExplanationScan;
   amendments: Array<Record<string, unknown>>;
   relationships: Array<{
     peer: BillSummary;
@@ -143,6 +172,18 @@ export type BillDetailResponse = {
     combined_effects: string[];
     why_reviews: string[];
     evidence_items: string[];
+  }>;
+};
+
+export type VoteExplanationsResponse = {
+  jurisdiction: Jurisdiction;
+  available_years: number[];
+  selected_year: number | null;
+  last_scanned_at: string | null;
+  bills: Array<{
+    bill: BillSummary;
+    explanation_count: number;
+    latest_statement_date: string | null;
   }>;
 };
 
@@ -352,6 +393,20 @@ export async function getBillDetail(
   return fetchKls<BillDetailResponse>(
     `/api/v1/areas/${encodeURIComponent(slug)}/bills/${encodeURIComponent(year)}/${encodeURIComponent(billNum)}` +
       queryString({ special_session: specialSession }),
+  );
+}
+
+export async function getVoteExplanations(year?: string): Promise<VoteExplanationsResponse> {
+  return (
+    (await fetchKls<VoteExplanationsResponse>(
+      `/api/v1/areas/wyoming/vote-explanations${queryString({ year, limit: 100 })}`,
+    )) ?? {
+      jurisdiction: FALLBACK_AREAS.find((area) => area.slug === "wyoming")!,
+      available_years: [],
+      selected_year: year ? Number(year) : null,
+      last_scanned_at: null,
+      bills: [],
+    }
   );
 }
 

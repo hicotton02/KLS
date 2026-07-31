@@ -56,12 +56,9 @@ test("renders Wyoming vote explanations on the public route", async () => {
   const html = await response.text();
   assert.match(html, /Wyoming vote records/);
   assert.match(html, /Why did they vote that way\?/);
-  assert.match(html, /Art Washut/);
-  assert.match(html, /Pam Thayer/);
-  assert.match(html, /Elissa Campbell/);
-  assert.match(html, /Scott Smith/);
+  assert.match(html, /Latest scan/);
+  assert.match(html, /Bills with a clear explanation/);
   assert.match(html, /Couldn(?:'|&#x27;)t find a published reason/);
-  assert.match(html, /youtube\.com\/watch\?v=X45rOkJsR2g&amp;t=8464s/);
   assert.doesNotMatch(html, /Private beta/);
   assert.doesNotMatch(html, /model|confidence score|AI-generated/i);
 });
@@ -87,6 +84,7 @@ test("keeps vote explanations scoped to Wyoming and out of primary navigation", 
   assert.doesNotMatch(header, /vote-explanations|Wyoming votes/i);
   assert.match(areaPage, /slug === "wyoming"/);
   assert.match(areaPage, /href="\/area\/wyoming\/vote-explanations"/);
+  await assert.rejects(access(new URL("../app/lib/vote-explanations.ts", import.meta.url)));
 });
 
 test("contains product metadata and no starter or model details", async () => {
@@ -108,6 +106,8 @@ test("contains product metadata and no starter or model details", async () => {
   assert.doesNotMatch(page, /Coverage areas|Current-session bills/);
   assert.doesNotMatch(header, /Wyoming votes|area\/wyoming\/legislators/);
   assert.match(billPage, /Last scanned/);
+  assert.match(billPage, /Why lawmakers voted/);
+  assert.match(billPage, /Couldn&apos;t find a published reason/);
   assert.doesNotMatch(`${page}\n${billPage}\n${apiClient}`, /qwen|generator_model|interpretation_model/i);
   assert.match(layout, /Keeping Law Simple/);
   assert.doesNotMatch(layout, /codex-preview|_sites-preview|Starter Project/i);

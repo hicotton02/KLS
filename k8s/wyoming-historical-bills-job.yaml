@@ -1,0 +1,75 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keeping-law-simple-wyoming-history
+  namespace: keeping-law-simple
+spec:
+  activeDeadlineSeconds: 604800
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keeping-law-simple
+        app.kubernetes.io/component: wyoming-history
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: history
+          image: registry.skazproconsulting.com/keeping-law-simple/web:20260721-votes3@sha256:34ec271f14c5ae61bb8637805b869cc76bd24abc11bf3a26628301491f17c776
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - app.cli
+            - sync-wyoming-history
+            - --years
+            - 2019,2018,2017,2016,2015,2014,2013,2012,2011,2010,2009,2008,2007,2006,2005
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keeping-law-simple-postgres-secrets
+                  key: KLS_POSTGRES_PASSWORD
+            - name: KLS_DATABASE_URL
+              value: postgresql://kls@keeping-law-simple-postgres.keeping-law-simple.svc.cluster.local:5432/kls
+          envFrom:
+            - configMapRef:
+                name: keeping-law-simple-config
+            - secretRef:
+                name: keeping-law-simple-secrets
+          resources:
+            requests:
+              cpu: "8"
+              memory: 8Gi
+            limits:
+              cpu: "24"
+              memory: 32Gi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 20Gi
+      nodeSelector:
+        kubernetes.io/hostname: gpu2
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Equal
+          value: rtx5090-lab
+          effect: NoSchedule

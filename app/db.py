@@ -148,6 +148,98 @@ ON bill_roll_call_votes(state, year, bill_num, special_session_key, roll_call_ke
 CREATE INDEX IF NOT EXISTS idx_bill_roll_call_votes_member
 ON bill_roll_call_votes(state, member_key, year);
 
+CREATE TABLE IF NOT EXISTS legislative_media (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    state TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    special_session_key INTEGER NOT NULL DEFAULT -1,
+    special_session_value INTEGER,
+    session_date TEXT NOT NULL,
+    session_day_number TEXT,
+    chamber TEXT NOT NULL,
+    time_of_day TEXT,
+    display_order INTEGER,
+    source_url TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    external_id TEXT,
+    mime_type TEXT,
+    title TEXT,
+    duration_seconds INTEGER,
+    transcript_status TEXT NOT NULL DEFAULT 'pending',
+    transcript_source TEXT,
+    transcript_json TEXT,
+    transcript_error TEXT,
+    transcript_updated_at TEXT,
+    explanation_scan_status TEXT NOT NULL DEFAULT 'pending',
+    explanation_scan_error TEXT,
+    explanation_scanned_at TEXT,
+    source_synced_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(state, year, special_session_key, source_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_legislative_media_session
+ON legislative_media(state, year, session_date, chamber, time_of_day);
+CREATE INDEX IF NOT EXISTS idx_legislative_media_work
+ON legislative_media(state, transcript_status, explanation_scan_status, year);
+
+CREATE TABLE IF NOT EXISTS bill_vote_explanation_scans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    state TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    special_session_key INTEGER NOT NULL DEFAULT -1,
+    special_session_value INTEGER,
+    bill_num TEXT NOT NULL,
+    scan_status TEXT NOT NULL DEFAULT 'pending',
+    media_total INTEGER NOT NULL DEFAULT 0,
+    media_transcribed INTEGER NOT NULL DEFAULT 0,
+    media_scanned INTEGER NOT NULL DEFAULT 0,
+    explanation_count INTEGER NOT NULL DEFAULT 0,
+    last_scanned_at TEXT,
+    details_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(state, year, special_session_key, bill_num)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bill_vote_explanation_scans_status
+ON bill_vote_explanation_scans(state, year, scan_status);
+
+CREATE TABLE IF NOT EXISTS bill_vote_explanations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    state TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    special_session_key INTEGER NOT NULL DEFAULT -1,
+    special_session_value INTEGER,
+    bill_num TEXT NOT NULL,
+    roll_call_key TEXT NOT NULL,
+    member_key TEXT NOT NULL,
+    lawmaker_name TEXT NOT NULL,
+    vote_position TEXT NOT NULL,
+    reason_summary TEXT NOT NULL,
+    evidence_text TEXT NOT NULL,
+    source_media_id INTEGER NOT NULL,
+    source_url TEXT NOT NULL,
+    source_title TEXT,
+    source_start_seconds INTEGER NOT NULL,
+    source_end_seconds INTEGER,
+    statement_date TEXT,
+    source_kind TEXT NOT NULL,
+    review_status TEXT NOT NULL DEFAULT 'publishable',
+    source_synced_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(state, year, special_session_key, bill_num, roll_call_key, member_key, source_media_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bill_vote_explanations_bill
+ON bill_vote_explanations(state, year, bill_num, special_session_key);
+CREATE INDEX IF NOT EXISTS idx_bill_vote_explanations_member
+ON bill_vote_explanations(state, member_key, year);
+CREATE INDEX IF NOT EXISTS idx_bill_vote_explanations_recent
+ON bill_vote_explanations(state, statement_date, year);
+
 CREATE TABLE IF NOT EXISTS bill_relationships (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     state TEXT NOT NULL,
@@ -237,6 +329,8 @@ RELATIONSHIP_JSON_COLUMNS = {
     "limits_and_unknowns_json",
     "heuristic_reasons_json",
 }
+LEGISLATIVE_MEDIA_JSON_COLUMNS = {"transcript_json"}
+EXPLANATION_SCAN_JSON_COLUMNS = {"details_json"}
 SYNC_STATUS_JSON_COLUMNS = {"years_json"}
 SYNC_STATUS_COLUMN_DEFINITIONS = {
     "source_total": "INTEGER",
@@ -1246,6 +1340,518 @@ def list_bill_roll_calls(
         roll_call["members"] = members_by_roll_call.get(str(roll_call["roll_call_key"]), [])
         roll_calls.append(roll_call)
     return roll_calls
+
+
+def _parse_legislative_media_row(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    parsed = dict(row)
+    _parse_json_field(parsed, "transcript_json", default=[])
+    return parsed
+
+
+def _parse_explanation_scan_row(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    parsed = dict(row)
+    _parse_json_field(parsed, "details_json", default={})
+    return parsed
+
+
+def upsert_legislative_media(payload: dict[str, Any]) -> int:
+    now = iso_now()
+    item = {
+        "state": str(payload["state"]),
+        "year": int(payload["year"]),
+        "special_session_key": normalize_special_session(payload.get("special_session_value")),
+        "special_session_value": payload.get("special_session_value"),
+        "session_date": str(payload["session_date"])[:10],
+        "session_day_number": payload.get("session_day_number"),
+        "chamber": str(payload["chamber"]),
+        "time_of_day": payload.get("time_of_day"),
+        "display_order": payload.get("display_order"),
+        "source_url": str(payload["source_url"]),
+        "source_kind": str(payload["source_kind"]),
+        "external_id": payload.get("external_id"),
+        "mime_type": payload.get("mime_type"),
+        "title": payload.get("title"),
+        "source_synced_at": payload.get("source_synced_at") or now,
+        "created_at": payload.get("created_at") or now,
+        "updated_at": payload.get("updated_at") or now,
+    }
+    columns = list(item)
+    with connect() as connection:
+        connection.execute(
+            f"""
+            INSERT INTO legislative_media ({', '.join(columns)})
+            VALUES ({', '.join(f':{column}' for column in columns)})
+            ON CONFLICT(state, year, special_session_key, source_url) DO UPDATE SET
+                session_date = excluded.session_date,
+                session_day_number = excluded.session_day_number,
+                chamber = excluded.chamber,
+                time_of_day = excluded.time_of_day,
+                display_order = excluded.display_order,
+                source_kind = excluded.source_kind,
+                external_id = excluded.external_id,
+                mime_type = excluded.mime_type,
+                title = COALESCE(legislative_media.title, excluded.title),
+                source_synced_at = excluded.source_synced_at,
+                updated_at = excluded.updated_at
+            """,
+            item,
+        )
+        row = connection.execute(
+            """
+            SELECT id FROM legislative_media
+            WHERE state = ? AND year = ? AND special_session_key = ? AND source_url = ?
+            """,
+            (item["state"], item["year"], item["special_session_key"], item["source_url"]),
+        ).fetchone()
+        connection.commit()
+    if row is None:
+        raise RuntimeError("Stored legislative media could not be reloaded")
+    return int(row["id"])
+
+
+def get_legislative_media(media_id: int) -> dict[str, Any] | None:
+    with connect() as connection:
+        row = connection.execute("SELECT * FROM legislative_media WHERE id = ?", (media_id,)).fetchone()
+    return _parse_legislative_media_row(row)
+
+
+def list_legislative_media(
+    state: str,
+    *,
+    years: Sequence[int] | None = None,
+    transcript_statuses: Sequence[str] | None = None,
+    explanation_scan_statuses: Sequence[str] | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    clauses = ["state = ?"]
+    params: list[Any] = [state]
+    if years:
+        clauses.append(f"year IN ({', '.join('?' for _ in years)})")
+        params.extend(int(year) for year in years)
+    if transcript_statuses:
+        clauses.append(f"transcript_status IN ({', '.join('?' for _ in transcript_statuses)})")
+        params.extend(str(status) for status in transcript_statuses)
+    if explanation_scan_statuses:
+        clauses.append(f"explanation_scan_status IN ({', '.join('?' for _ in explanation_scan_statuses)})")
+        params.extend(str(status) for status in explanation_scan_statuses)
+    limit_sql = ""
+    if limit is not None:
+        limit_sql = " LIMIT ?"
+        params.append(max(1, int(limit)))
+    with connect() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT * FROM legislative_media
+            WHERE {' AND '.join(clauses)}
+            ORDER BY year DESC, session_date DESC, chamber ASC, time_of_day ASC, id ASC
+            {limit_sql}
+            """,
+            params,
+        ).fetchall()
+    return [parsed for row in rows if (parsed := _parse_legislative_media_row(row)) is not None]
+
+
+def update_legislative_media_transcript(
+    media_id: int,
+    *,
+    status: str,
+    transcript_source: str | None = None,
+    segments: list[dict[str, Any]] | None = None,
+    title: str | None = None,
+    duration_seconds: int | None = None,
+    error: str | None = None,
+) -> None:
+    now = iso_now()
+    with connect() as connection:
+        connection.execute(
+            """
+            UPDATE legislative_media
+            SET transcript_status = ?,
+                transcript_source = ?,
+                transcript_json = ?,
+                transcript_error = ?,
+                transcript_updated_at = ?,
+                title = COALESCE(?, title),
+                duration_seconds = COALESCE(?, duration_seconds),
+                explanation_scan_status = CASE WHEN ? = 'available' THEN 'pending' ELSE explanation_scan_status END,
+                explanation_scan_error = CASE WHEN ? = 'available' THEN NULL ELSE explanation_scan_error END,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                transcript_source,
+                json.dumps(segments) if segments is not None else None,
+                error,
+                now,
+                title,
+                duration_seconds,
+                status,
+                status,
+                now,
+                media_id,
+            ),
+        )
+        connection.commit()
+
+
+def mark_legislative_media_explanation_scan(
+    media_id: int,
+    *,
+    status: str,
+    error: str | None = None,
+) -> None:
+    now = iso_now()
+    with connect() as connection:
+        connection.execute(
+            """
+            UPDATE legislative_media
+            SET explanation_scan_status = ?, explanation_scan_error = ?, explanation_scanned_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (status, error, now, now, media_id),
+        )
+        connection.commit()
+
+
+def list_roll_calls_for_session(
+    state: str,
+    year: int,
+    session_date: str,
+    chamber: str,
+    *,
+    special_session_value: int | None = None,
+) -> list[dict[str, Any]]:
+    special_session_key = normalize_special_session(special_session_value)
+    params = (state, year, special_session_key, chamber, f"{session_date[:10]}%")
+    with connect() as connection:
+        roll_call_rows = connection.execute(
+            """
+            SELECT roll_calls.*, bills.catch_title, bills.bill_title
+            FROM bill_roll_calls AS roll_calls
+            JOIN bills
+              ON bills.state = roll_calls.state
+             AND bills.year = roll_calls.year
+             AND bills.special_session_key = roll_calls.special_session_key
+             AND bills.bill_num = roll_calls.bill_num
+            WHERE roll_calls.state = ?
+              AND roll_calls.year = ?
+              AND roll_calls.special_session_key = ?
+              AND roll_calls.chamber = ?
+              AND roll_calls.vote_date LIKE ?
+            ORDER BY roll_calls.vote_date ASC, roll_calls.bill_num ASC, roll_calls.roll_call_key ASC
+            """,
+            params,
+        ).fetchall()
+        member_rows = connection.execute(
+            """
+            SELECT * FROM bill_roll_call_votes
+            WHERE state = ? AND year = ? AND special_session_key = ? AND chamber = ?
+              AND roll_call_key IN (
+                SELECT roll_call_key FROM bill_roll_calls
+                WHERE state = ? AND year = ? AND special_session_key = ? AND chamber = ? AND vote_date LIKE ?
+              )
+            ORDER BY roll_call_key, legislator_name
+            """,
+            (*params[:4], *params),
+        ).fetchall()
+
+    members_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in member_rows:
+        item = dict(row)
+        key = (str(item["bill_num"]), str(item["roll_call_key"]))
+        members_by_key.setdefault(key, []).append(item)
+    results: list[dict[str, Any]] = []
+    for row in roll_call_rows:
+        item = dict(row)
+        key = (str(item["bill_num"]), str(item["roll_call_key"]))
+        item["members"] = members_by_key.get(key, [])
+        results.append(item)
+    return results
+
+
+def replace_media_vote_explanations(
+    media_id: int,
+    payloads: list[dict[str, Any]],
+    *,
+    replace_non_curated: bool = True,
+) -> None:
+    columns = [
+        "state",
+        "year",
+        "special_session_key",
+        "special_session_value",
+        "bill_num",
+        "roll_call_key",
+        "member_key",
+        "lawmaker_name",
+        "vote_position",
+        "reason_summary",
+        "evidence_text",
+        "source_media_id",
+        "source_url",
+        "source_title",
+        "source_start_seconds",
+        "source_end_seconds",
+        "statement_date",
+        "source_kind",
+        "review_status",
+        "source_synced_at",
+        "created_at",
+        "updated_at",
+    ]
+    now = iso_now()
+    rows: list[dict[str, Any]] = []
+    for payload in payloads:
+        row = dict(payload)
+        row["special_session_key"] = normalize_special_session(row.get("special_session_value"))
+        row["source_media_id"] = media_id
+        row.setdefault("review_status", "publishable")
+        row.setdefault("source_synced_at", now)
+        row.setdefault("created_at", now)
+        row.setdefault("updated_at", now)
+        rows.append(row)
+    with connect() as connection:
+        if replace_non_curated:
+            connection.execute(
+                "DELETE FROM bill_vote_explanations WHERE source_media_id = ? AND review_status <> 'curated'",
+                (media_id,),
+            )
+        if rows:
+            connection.executemany(
+                f"""
+                INSERT INTO bill_vote_explanations ({', '.join(columns)})
+                VALUES ({', '.join(f':{column}' for column in columns)})
+                ON CONFLICT(state, year, special_session_key, bill_num, roll_call_key, member_key, source_media_id)
+                DO NOTHING
+                """,
+                rows,
+            )
+        connection.commit()
+
+
+def upsert_bill_vote_explanation_scan(payload: dict[str, Any]) -> None:
+    upsert_bill_vote_explanation_scans([payload])
+
+
+def upsert_bill_vote_explanation_scans(payloads: Sequence[dict[str, Any]]) -> None:
+    if not payloads:
+        return
+    now = iso_now()
+    items = [
+        {
+            "state": str(payload["state"]),
+            "year": int(payload["year"]),
+            "special_session_key": normalize_special_session(payload.get("special_session_value")),
+            "special_session_value": payload.get("special_session_value"),
+            "bill_num": str(payload["bill_num"]),
+            "scan_status": str(payload["scan_status"]),
+            "media_total": int(payload.get("media_total") or 0),
+            "media_transcribed": int(payload.get("media_transcribed") or 0),
+            "media_scanned": int(payload.get("media_scanned") or 0),
+            "explanation_count": int(payload.get("explanation_count") or 0),
+            "last_scanned_at": payload.get("last_scanned_at"),
+            "details_json": json.dumps(payload.get("details") or {}),
+            "created_at": payload.get("created_at") or now,
+            "updated_at": payload.get("updated_at") or now,
+        }
+        for payload in payloads
+    ]
+    columns = list(items[0])
+    sql = f"""
+        INSERT INTO bill_vote_explanation_scans ({', '.join(columns)})
+        VALUES ({', '.join(f':{column}' for column in columns)})
+        ON CONFLICT(state, year, special_session_key, bill_num) DO UPDATE SET
+            scan_status = excluded.scan_status,
+            media_total = excluded.media_total,
+            media_transcribed = excluded.media_transcribed,
+            media_scanned = excluded.media_scanned,
+            explanation_count = excluded.explanation_count,
+            last_scanned_at = excluded.last_scanned_at,
+            details_json = excluded.details_json,
+            updated_at = excluded.updated_at
+        """
+    with connect() as connection:
+        connection.executemany(sql, items)
+        connection.commit()
+
+
+def get_bill_vote_explanation_scan(
+    state: str,
+    year: int,
+    bill_num: str,
+    *,
+    special_session_value: int | None = None,
+) -> dict[str, Any] | None:
+    with connect() as connection:
+        row = connection.execute(
+            """
+            SELECT * FROM bill_vote_explanation_scans
+            WHERE state = ? AND year = ? AND bill_num = ? AND special_session_key = ?
+            """,
+            (state, year, bill_num, normalize_special_session(special_session_value)),
+        ).fetchone()
+    return _parse_explanation_scan_row(row)
+
+
+def list_bill_vote_explanations(
+    state: str,
+    year: int,
+    bill_num: str,
+    *,
+    special_session_value: int | None = None,
+) -> list[dict[str, Any]]:
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT explanations.*,
+                   votes.party,
+                   votes.district,
+                   roll_calls.chamber,
+                   roll_calls.vote_date,
+                   roll_calls.action
+            FROM bill_vote_explanations AS explanations
+            LEFT JOIN bill_roll_call_votes AS votes
+              ON votes.state = explanations.state
+             AND votes.year = explanations.year
+             AND votes.special_session_key = explanations.special_session_key
+             AND votes.bill_num = explanations.bill_num
+             AND votes.roll_call_key = explanations.roll_call_key
+             AND votes.member_key = explanations.member_key
+            LEFT JOIN bill_roll_calls AS roll_calls
+              ON roll_calls.state = explanations.state
+             AND roll_calls.year = explanations.year
+             AND roll_calls.special_session_key = explanations.special_session_key
+             AND roll_calls.bill_num = explanations.bill_num
+             AND roll_calls.roll_call_key = explanations.roll_call_key
+            WHERE explanations.state = ?
+              AND explanations.year = ?
+              AND explanations.bill_num = ?
+              AND explanations.special_session_key = ?
+              AND explanations.review_status IN ('publishable', 'curated')
+            ORDER BY explanations.statement_date DESC, explanations.source_start_seconds ASC, explanations.lawmaker_name ASC
+            """,
+            (state, year, bill_num, normalize_special_session(special_session_value)),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_vote_explanation_bill_keys(
+    state: str,
+    *,
+    year: int | None = None,
+    limit: int = 60,
+) -> list[dict[str, Any]]:
+    clauses = ["state = ?", "review_status IN ('publishable', 'curated')"]
+    params: list[Any] = [state]
+    if year is not None:
+        clauses.append("year = ?")
+        params.append(year)
+    params.append(max(1, min(int(limit), 200)))
+    with connect() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT year, special_session_key, special_session_value, bill_num,
+                   COUNT(*) AS explanation_count,
+                   MAX(statement_date) AS latest_statement_date,
+                   MAX(updated_at) AS latest_explanation_at
+            FROM bill_vote_explanations
+            WHERE {' AND '.join(clauses)}
+            GROUP BY year, special_session_key, special_session_value, bill_num
+            ORDER BY latest_statement_date DESC, year DESC, bill_num ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_vote_explanation_overview(state: str) -> dict[str, Any]:
+    with connect() as connection:
+        media = connection.execute(
+            """
+            SELECT COUNT(*) AS media_total,
+                   SUM(CASE WHEN transcript_status = 'available' THEN 1 ELSE 0 END) AS media_transcribed,
+                   SUM(CASE WHEN explanation_scan_status = 'complete' THEN 1 ELSE 0 END) AS media_scanned,
+                   MAX(explanation_scanned_at) AS last_scanned_at
+            FROM legislative_media WHERE state = ?
+            """,
+            (state,),
+        ).fetchone()
+        scans = connection.execute(
+            """
+            SELECT COUNT(*) AS bills_tracked,
+                   SUM(CASE WHEN scan_status = 'complete' THEN 1 ELSE 0 END) AS bills_scanned
+            FROM bill_vote_explanation_scans WHERE state = ?
+            """,
+            (state,),
+        ).fetchone()
+        explanations = connection.execute(
+            """
+            SELECT COUNT(*) AS explanation_count, MAX(source_synced_at) AS latest_explanation_at
+            FROM bill_vote_explanations
+            WHERE state = ? AND review_status IN ('publishable', 'curated')
+            """,
+            (state,),
+        ).fetchone()
+        years = connection.execute(
+            "SELECT DISTINCT year FROM bills WHERE state = ? ORDER BY year DESC",
+            (state,),
+        ).fetchall()
+    values = {
+        **dict(media or {}),
+        **dict(scans or {}),
+        **dict(explanations or {}),
+        "available_years": [int(row["year"]) for row in years],
+    }
+    timestamps = [
+        str(value)
+        for value in (values.get("last_scanned_at"), values.get("latest_explanation_at"))
+        if value
+    ]
+    values["last_scanned_at"] = max(timestamps) if timestamps else None
+    return values
+
+
+def list_bill_roll_call_targets(state: str, years: Sequence[int]) -> list[dict[str, Any]]:
+    if not years:
+        return []
+    params: list[Any] = [state, *(int(year) for year in years)]
+    with connect() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT DISTINCT year, special_session_key, special_session_value, bill_num, chamber,
+                            SUBSTR(vote_date, 1, 10) AS session_date
+            FROM bill_roll_calls
+            WHERE state = ? AND year IN ({', '.join('?' for _ in years)}) AND vote_date IS NOT NULL
+            ORDER BY year DESC, session_date DESC, bill_num ASC
+            """,
+            params,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def count_bill_vote_explanations(
+    state: str,
+    year: int,
+    bill_num: str,
+    *,
+    special_session_value: int | None = None,
+) -> int:
+    with connect() as connection:
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS total FROM bill_vote_explanations
+            WHERE state = ? AND year = ? AND bill_num = ? AND special_session_key = ?
+              AND review_status IN ('publishable', 'curated')
+            """,
+            (state, year, bill_num, normalize_special_session(special_session_value)),
+        ).fetchone()
+    return int(row["total"] or 0) if row is not None else 0
 
 
 def list_legislator_vote_summaries(

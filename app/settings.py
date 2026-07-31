@@ -57,6 +57,13 @@ class Settings:
     wyoming_api_base: str
     wyoming_site_base: str
     wyoming_years: tuple[int, ...]
+    wyoming_explanation_years: tuple[int, ...]
+    transcription_api_url: str
+    transcription_timeout_seconds: float
+    local_transcription_model: str
+    local_transcription_device: str
+    local_transcription_compute_type: str
+    local_transcription_threads: int
     alabama_api_base: str
     alabama_site_base: str
     alabama_years: tuple[int, ...]
@@ -215,6 +222,18 @@ def get_settings() -> Settings:
         wyoming_api_base=os.getenv("KLS_WYOMING_API_BASE", "https://web.wyoleg.gov/LsoService/api"),
         wyoming_site_base=os.getenv("KLS_WYOMING_SITE_BASE", "https://www.wyoleg.gov"),
         wyoming_years=_parse_int_list(os.getenv("KLS_WYOMING_YEARS"), default=(current_year,)),
+        wyoming_explanation_years=_parse_int_list(
+            os.getenv("KLS_WYOMING_EXPLANATION_YEARS"),
+            default=tuple(range(current_year, 2004, -1)),
+        ),
+        transcription_api_url=(os.getenv("KLS_TRANSCRIPTION_API_URL", "") or "").strip(),
+        transcription_timeout_seconds=float(os.getenv("KLS_TRANSCRIPTION_TIMEOUT_SECONDS", "1800")),
+        local_transcription_model=(os.getenv("KLS_LOCAL_TRANSCRIPTION_MODEL", "") or "").strip(),
+        local_transcription_device=(os.getenv("KLS_LOCAL_TRANSCRIPTION_DEVICE", "cpu") or "cpu").strip(),
+        local_transcription_compute_type=(
+            os.getenv("KLS_LOCAL_TRANSCRIPTION_COMPUTE_TYPE", "int8") or "int8"
+        ).strip(),
+        local_transcription_threads=max(1, int(os.getenv("KLS_LOCAL_TRANSCRIPTION_THREADS", "8"))),
         alabama_api_base=os.getenv("KLS_ALABAMA_API_BASE", "https://alison.legislature.state.al.us/graphql"),
         alabama_site_base=os.getenv("KLS_ALABAMA_SITE_BASE", "https://alison.legislature.state.al.us"),
         alabama_years=_parse_int_list(os.getenv("KLS_ALABAMA_YEARS"), default=(current_year,)),

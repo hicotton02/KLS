@@ -95,6 +95,47 @@ class OllamaClient:
         parsed = self._run_json_prompt(prompt, temperature=0.0, top_p=0.3, num_predict=500)
         return self._normalize_amendment(parsed)
 
+    def extract_vote_explanations(
+        self,
+        *,
+        bill_num: str,
+        bill_title: str,
+        lawmakers: list[str],
+        transcript: str,
+    ) -> list[dict[str, Any]]:
+        prompt = self._build_vote_explanation_prompt(
+            bill_num=bill_num,
+            bill_title=bill_title,
+            lawmakers=lawmakers,
+            transcript=transcript,
+        )
+        parsed = self._run_json_prompt(prompt, temperature=0.0, top_p=0.25, num_predict=1400)
+        statements = parsed.get("statements") if isinstance(parsed, dict) else []
+        if not isinstance(statements, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for raw in statements:
+            if not isinstance(raw, dict):
+                continue
+            lawmaker_name = str(raw.get("lawmaker_name") or "").strip()
+            reason_summary = str(raw.get("reason_summary") or "").strip()
+            evidence_text = str(raw.get("evidence_text") or "").strip()
+            if not lawmaker_name or not reason_summary or not evidence_text:
+                continue
+            try:
+                start_seconds = max(0, int(float(raw.get("start_seconds") or 0)))
+            except (TypeError, ValueError):
+                start_seconds = 0
+            normalized.append(
+                {
+                    "lawmaker_name": lawmaker_name,
+                    "reason_summary": reason_summary[:700],
+                    "evidence_text": evidence_text[:1200],
+                    "start_seconds": start_seconds,
+                }
+            )
+        return normalized
+
     def _run_json_prompt(
         self,
         prompt: str,
@@ -215,6 +256,51 @@ Official digest text:
 
 Official bill text excerpt:
 {current_excerpt or "[not provided]"}
+""".strip()
+
+    @staticmethod
+    def _build_vote_explanation_prompt(
+        *,
+        bill_num: str,
+        bill_title: str,
+        lawmakers: list[str],
+        transcript: str,
+    ) -> str:
+        roster = "\n".join(f"- {name}" for name in lawmakers)
+        excerpt = truncate_for_prompt(transcript, 36000)
+        return f"""
+Find only clear, personal explanations that lawmakers give for how they will vote or already voted on one bill.
+
+Rules:
+- Use only the timestamped transcript below.
+- Do not infer a motive from a vote, party, sponsor, question, or general opinion.
+- A statement qualifies only when the speaker personally connects a reason to supporting, opposing, or voting on this bill.
+- Ignore the presiding officer's procedural words and statements about amendments unless the speaker clearly ties the reason to the bill itself.
+- Use a lawmaker name exactly as written in the roster. If the speaker cannot be matched to the roster, omit the statement.
+- Copy a short exact passage from the transcript into evidence_text. Do not clean up or rewrite the evidence.
+- start_seconds must be the timestamp printed on the line where that evidence begins.
+- Write reason_summary in plain, neutral language. One or two short sentences. Do not mention a party or speculate.
+- Return an empty statements list when there is no clear personal explanation.
+
+Return strict JSON:
+{{
+  "statements": [
+    {{
+      "lawmaker_name": "exact roster name",
+      "reason_summary": "plain-language paraphrase",
+      "evidence_text": "exact transcript words",
+      "start_seconds": 123
+    }}
+  ]
+}}
+
+Bill: {bill_num} - {bill_title or '[title unavailable]'}
+
+Lawmaker roster:
+{roster}
+
+Timestamped transcript:
+{excerpt}
 """.strip()
 
     def _build_fact_check_prompt(

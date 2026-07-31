@@ -288,6 +288,11 @@ h3 { margin-bottom: 0.4rem; font-size: 1.05rem; }
 .beta-scan span, .beta-scan strong { display: block; }
 .beta-scan span { color: var(--muted); font-size: 0.75rem; }
 .beta-scan strong { margin-top: 0.12rem; font-size: 0.9rem; }
+.explanation-year-filter { display: flex; align-items: end; gap: 0.65rem; padding: 1.2rem 0; border-bottom: 1px solid var(--line); }
+.explanation-year-filter label > span { display: block; margin-bottom: 0.3rem; color: var(--muted); font-size: 0.75rem; font-weight: 650; }
+.explanation-year-filter select { width: 130px; height: 42px; padding: 0 0.65rem; color: var(--ink); background: var(--surface); border: 1px solid #cbd4ce; border-radius: 5px; }
+.explanation-year-filter button { min-height: 42px; display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.55rem 0.8rem; color: white; background: var(--brand); border: 1px solid var(--brand); border-radius: 5px; font-weight: 700; cursor: pointer; }
+.explanation-year-filter button:hover { background: var(--brand-dark); }
 .beta-bill-band { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2rem; align-items: center; padding: 1.5rem 0; border-bottom: 1px solid var(--line); }
 .beta-bill-band h2 { margin-bottom: 0.35rem; font-size: 1.35rem; }
 .beta-bill-band p:last-child { margin: 0; color: var(--muted); }
@@ -297,6 +302,13 @@ h3 { margin-bottom: 0.4rem; font-size: 1.05rem; }
 .beta-section-heading { display: flex; justify-content: space-between; gap: 2rem; align-items: end; margin-bottom: 1rem; }
 .beta-section-heading h2 { margin: 0; }
 .beta-section-heading > p { max-width: 420px; margin: 0; color: var(--muted); font-size: 0.82rem; text-align: right; }
+.explanation-bill-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+.explanation-bill-list li { border-bottom: 1px solid var(--line); }
+.explanation-bill-list a { min-height: 78px; display: grid; grid-template-columns: 24px minmax(0, 1fr) 20px; gap: 0.75rem; align-items: center; padding: 0.9rem 0.25rem; }
+.explanation-bill-list a > svg:first-child { color: var(--brand); }
+.explanation-bill-list strong, .explanation-bill-list small { display: block; }
+.explanation-bill-list strong { font-size: 0.96rem; }
+.explanation-bill-list small { margin-top: 0.2rem; color: var(--muted); font-size: 0.75rem; }
 .explanation-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .vote-explanation { min-width: 0; padding: 1.2rem; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
 .vote-explanation.explanation-missing { background: #f7f8f7; border-style: dashed; }
@@ -314,6 +326,9 @@ h3 { margin-bottom: 0.4rem; font-size: 1.05rem; }
 .explanation-source span { font-size: 0.78rem; font-weight: 720; }
 .explanation-source small { margin-top: 0.1rem; color: var(--muted); font-size: 0.7rem; }
 .explanation-source a { display: inline-flex; align-items: center; gap: 0.35rem; margin-top: 0.65rem; color: var(--brand); font-size: 0.8rem; font-weight: 720; }
+.explanation-empty { min-height: 86px; display: flex; align-items: center; gap: 0.6rem; margin: 0; padding: 1rem 0; color: var(--muted); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.explanation-empty > svg { color: var(--muted); flex: 0 0 auto; }
+.explanation-footnote { margin: 1rem 0 0; color: var(--muted); font-size: 0.82rem; }
 .beta-rule { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 0.8rem; align-items: start; margin-top: 2.5rem; padding: 1.4rem 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .beta-rule > svg { color: var(--brand); }
 .beta-rule h2 { margin-bottom: 0.25rem; font-size: 1rem; }

@@ -62,6 +62,15 @@ class WyomingApiClient:
         response.raise_for_status()
         return response.json()
 
+    def fetch_chamber_audio(self, year: int, special_session_value: int | None = None) -> list[dict[str, Any]]:
+        params = None
+        if special_session_value is not None:
+            params = {"specialSessionValue": special_session_value}
+        response = get_with_retries(self.client, f"/chamberAudio/{year}", params=params)
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, list) else []
+
     def fetch_legislators(self, year: int, chamber: str) -> list[dict[str, Any]]:
         response = get_with_retries(self.client, f"/legislator/{year}/{chamber}")
         response.raise_for_status()

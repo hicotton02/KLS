@@ -62,6 +62,7 @@ from app.sync_service import (
     sync_wyoming,
     sync_wyoming_votes,
 )
+from app.wyoming_vote_explanations import backfill_wyoming_vote_explanations
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -77,6 +78,32 @@ def build_parser() -> argparse.ArgumentParser:
     vote_parser.add_argument("--years", help="Comma-separated list of Wyoming legislative years")
     vote_parser.add_argument("--limit", type=int, help="Optional max number of bills to process")
     vote_parser.add_argument("--force", action="store_true", help="Refresh bills that already have vote data")
+
+    wyoming_history_parser = subparsers.add_parser(
+        "sync-wyoming-history",
+        help="Sync Wyoming historical bills without running the other jurisdictions",
+    )
+    wyoming_history_parser.add_argument("--years", help="Comma-separated Wyoming years, newest first")
+    wyoming_history_parser.add_argument("--limit", type=int, help="Optional max bills per year")
+    wyoming_history_parser.add_argument(
+        "--with-interpretation",
+        action="store_true",
+        help="Also generate plain-language interpretations during the history import",
+    )
+
+    explanation_parser = subparsers.add_parser(
+        "backfill-wyoming-explanations",
+        help="Catalog official recordings and find source-backed reasons for Wyoming votes",
+    )
+    explanation_parser.add_argument("--years", help="Comma-separated Wyoming years, newest first")
+    explanation_parser.add_argument(
+        "--stage",
+        choices=("all", "discover", "transcribe", "extract", "status", "worker"),
+        default="all",
+        help="Run one backfill stage or the full pipeline",
+    )
+    explanation_parser.add_argument("--limit-media", type=int, help="Optional max recordings to process")
+    explanation_parser.add_argument("--force", action="store_true", help="Reprocess completed recordings")
 
     sync_parser = subparsers.add_parser("sync", help="Sync supported state and federal bills into the local database")
     sync_parser.add_argument("--alaska-years", help="Comma-separated list of Alaska legislative years")
@@ -430,6 +457,34 @@ def main() -> None:
         summary = sync_wyoming_votes(
             years=years,
             limit=args.limit,
+            force=args.force,
+            logger=print,
+        )
+        print(json.dumps(asdict(summary), indent=2))
+        return
+
+    if args.command == "sync-wyoming-history":
+        years = list(settings.wyoming_explanation_years)
+        if args.years:
+            years = [int(item.strip()) for item in args.years.split(",") if item.strip()]
+        summary = sync_wyoming(
+            years=years,
+            limit=args.limit,
+            skip_interpretation=not args.with_interpretation,
+            skip_relationships=True,
+            logger=print,
+        )
+        print(json.dumps(asdict(summary), indent=2))
+        return
+
+    if args.command == "backfill-wyoming-explanations":
+        years = None
+        if args.years:
+            years = [int(item.strip()) for item in args.years.split(",") if item.strip()]
+        summary = backfill_wyoming_vote_explanations(
+            years=years,
+            stage=args.stage,
+            limit_media=args.limit_media,
             force=args.force,
             logger=print,
         )

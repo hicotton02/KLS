@@ -28,6 +28,7 @@ data:
   KLS_WYOMING_API_BASE: https://web.wyoleg.gov/LsoService/api
   KLS_WYOMING_SITE_BASE: https://www.wyoleg.gov
   KLS_WYOMING_YEARS: "2026"
+  KLS_WYOMING_EXPLANATION_YEARS: "2026,2025,2024,2023,2022,2021,2020,2019,2018,2017,2016,2015,2014,2013,2012,2011,2010,2009,2008,2007,2006,2005"
   KLS_ALABAMA_API_BASE: https://alison.legislature.state.al.us/graphql
   KLS_ALABAMA_SITE_BASE: https://alison.legislature.state.al.us
   KLS_ALABAMA_YEARS: "2026"

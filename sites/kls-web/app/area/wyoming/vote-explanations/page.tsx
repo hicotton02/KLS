@@ -1,23 +1,24 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import {
-  ArrowLeft,
-  CalendarDays,
-  ExternalLink,
-  FileCheck2,
-  PlayCircle,
-  SearchX,
-  ShieldCheck,
-} from "lucide-react";
-import { wyomingVoteExplanations } from "../../../lib/vote-explanations";
+import { ArrowLeft, CalendarDays, ChevronRight, FileCheck2, Filter, ShieldCheck } from "lucide-react";
+import { billHref, formatScanTimestamp, getVoteExplanations } from "../../../lib/kls";
 
 export const metadata: Metadata = {
   title: "Why Wyoming Lawmakers Voted",
   description: "Plain-language reasons Wyoming lawmakers gave for their votes, linked to public sources.",
 };
 
-export default function WyomingVoteExplanationsPage() {
-  const explanations = wyomingVoteExplanations;
+type SearchParams = Promise<Record<string, string | string[] | undefined>>;
+
+function first(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+export default async function WyomingVoteExplanationsPage({ searchParams }: { searchParams: SearchParams }) {
+  const query = await searchParams;
+  const selectedYear = first(query.year);
+  const data = await getVoteExplanations(selectedYear);
+  const latestScan = formatScanTimestamp(data.last_scanned_at);
 
   return (
     <main className="page-main beta-page">
@@ -31,87 +32,63 @@ export default function WyomingVoteExplanationsPage() {
             <p className="eyebrow">Wyoming vote records</p>
             <h1 id="explanations-title">Why did they vote that way?</h1>
             <p className="beta-lede">
-              When a lawmaker explains a vote in public, we show the reason and link to the
-              exact moment. When we cannot find one, we say that plainly.
+              We show a reason only when a lawmaker explained it in a public source. Every reason links to the statement.
             </p>
           </div>
-          <div className="beta-scan" aria-label={`Latest video checked ${explanations.latestVideoChecked}`}>
+          <div className="beta-scan" aria-label={latestScan ? `Latest scan ${latestScan}` : "Scan in progress"}>
             <CalendarDays size={22} strokeWidth={1.8} aria-hidden="true" />
             <div>
-              <span>Latest video checked</span>
-              <strong>{explanations.latestVideoChecked}</strong>
+              <span>Latest scan</span>
+              <strong>{latestScan ?? "In progress"}</strong>
             </div>
           </div>
         </section>
 
-        <section className="beta-bill-band" aria-labelledby="explanation-bill-title">
-          <div>
-            <p className="eyebrow">{explanations.bill.chamber}</p>
-            <h2 id="explanation-bill-title">{explanations.bill.number}: {explanations.bill.title}</h2>
-            <p>{explanations.bill.result} on {explanations.bill.voteDate}.</p>
-          </div>
-          <a href={explanations.bill.officialUrl} target="_blank" rel="noreferrer">
-            Official bill and vote <ExternalLink size={16} aria-hidden="true" />
-          </a>
-        </section>
+        {data.available_years.length ? (
+          <form className="explanation-year-filter" action="/area/wyoming/vote-explanations" method="get">
+            <label>
+              <span>Year</span>
+              <select name="year" defaultValue={String(data.selected_year ?? data.available_years[0])}>
+                {data.available_years.map((year) => <option key={year} value={year}>{year}</option>)}
+              </select>
+            </label>
+            <button type="submit"><Filter size={17} aria-hidden="true" /> Show year</button>
+          </form>
+        ) : null}
 
-        <section className="beta-explanations" aria-labelledby="statements-title">
+        <section className="beta-explanations" aria-labelledby="checked-bills-title">
           <div className="beta-section-heading">
             <div>
-              <p className="eyebrow">Public statements</p>
-              <h2 id="statements-title">What lawmakers said</h2>
+              <p className="eyebrow">Published reasons</p>
+              <h2 id="checked-bills-title">Bills with a clear explanation</h2>
             </div>
-            <p>Reasons are paraphrased from the linked public statements.</p>
           </div>
 
-          <div className="explanation-list">
-            {explanations.examples.map((example) => {
-              const reasonFound = example.reasonStatus === "found";
-              return (
-                <article className={`vote-explanation ${reasonFound ? "" : "explanation-missing"}`} key={example.lawmaker}>
-                  <header className="explanation-header">
-                    <div>
-                      <h3>{example.lawmaker}</h3>
-                      <p>{example.party} · {example.district}</p>
-                    </div>
-                    <span className={`vote-badge vote-${example.vote.toLowerCase()}`}>
-                      Voted {example.vote}
+          {data.bills.length ? (
+            <ol className="explanation-bill-list">
+              {data.bills.map((item) => (
+                <li key={`${item.bill.year}-${item.bill.bill_num}`}>
+                  <Link href={billHref(item.bill)}>
+                    <FileCheck2 size={20} aria-hidden="true" />
+                    <span>
+                      <strong>{item.bill.bill_num}: {item.bill.plain_language_title || item.bill.catch_title || item.bill.bill_title}</strong>
+                      <small>{item.explanation_count} published reason{item.explanation_count === 1 ? "" : "s"}</small>
                     </span>
-                  </header>
-
-                  <div className="explanation-body">
-                    <div>
-                      <p className="explanation-label">
-                        {reasonFound ? "Why they voted this way" : "What we found"}
-                      </p>
-                      <p className="explanation-reason">{example.reason}</p>
-                    </div>
-                    <div className="explanation-source">
-                      {reasonFound ? (
-                        <FileCheck2 size={20} aria-hidden="true" />
-                      ) : (
-                        <SearchX size={20} aria-hidden="true" />
-                      )}
-                      <div>
-                        <span>{reasonFound ? "Public statement found" : "Published reason not found"}</span>
-                        <small>{example.sourceLabel}</small>
-                        <a href={example.sourceUrl} target="_blank" rel="noreferrer">
-                          <PlayCircle size={17} aria-hidden="true" /> {example.sourceAction}
-                        </a>
-                      </div>
-                    </div>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
+                    <ChevronRight size={18} aria-hidden="true" />
+                  </Link>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="explanation-empty">We are still checking public recordings for this year.</p>
+          )}
         </section>
 
         <section className="beta-rule" aria-labelledby="source-rule-title">
           <ShieldCheck size={24} strokeWidth={1.8} aria-hidden="true" />
           <div>
             <h2 id="source-rule-title">No guessing</h2>
-            <p>A vote alone does not prove a lawmaker&apos;s reason. We only show a reason when a public source supports it.</p>
+            <p>A vote alone does not prove a lawmaker&apos;s reason. If we cannot support a reason with a public statement, we say: Couldn&apos;t find a published reason.</p>
           </div>
         </section>
       </div>

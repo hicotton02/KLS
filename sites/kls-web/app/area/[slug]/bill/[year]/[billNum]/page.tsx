@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AlertTriangle, ArrowLeft, CalendarDays, CheckCircle2, ChevronDown, Clock3, ExternalLink, FileText, Vote } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CalendarDays, CheckCircle2, ChevronDown, Clock3, ExternalLink, FileText, MessageSquareQuote, PlayCircle, SearchX, Vote } from "lucide-react";
 import { notFound } from "next/navigation";
 import { formatScanTimestamp, getBillDetail, type Interpretation } from "../../../../../lib/kls";
 
@@ -33,6 +33,8 @@ export default async function BillPage({ params, searchParams }: { params: Route
   if (!data) notFound();
 
   const interpretation = data.interpretation;
+  const voteExplanations = data.vote_explanations ?? [];
+  const explanationScan = data.vote_explanation_scan;
   const sourceLinks = Object.entries(data.official_links).filter((entry): entry is [string, string] => Boolean(entry[1]));
   const linkLabels: Record<string, string> = {
     official_page: "Official bill page",
@@ -109,6 +111,54 @@ export default async function BillPage({ params, searchParams }: { params: Route
         </div>
         {data.bill.official_summary_text ? <div className="official-text"><h3>Official summary</h3><p>{data.bill.official_summary_text}</p></div> : null}
       </section>
+
+      {slug === "wyoming" && data.roll_calls?.length ? (
+        <section className="content-section" aria-labelledby="vote-reasons-title">
+          <div className="section-heading">
+            <div><p className="eyebrow">Public statements</p><h2 id="vote-reasons-title">Why lawmakers voted</h2></div>
+            {explanationScan?.last_scanned_at ? <p>Last checked {formatScanTimestamp(explanationScan.last_scanned_at, true)}</p> : null}
+          </div>
+
+          {voteExplanations.length ? (
+            <>
+              <div className="explanation-list">
+                {voteExplanations.map((explanation) => (
+                  <article className="vote-explanation" key={`${explanation.roll_call_key}-${explanation.member_key}`}>
+                    <header className="explanation-header">
+                      <div>
+                        <h3><Link href={explanation.profile_href}>{explanation.name}</Link></h3>
+                        <p>{[explanation.party, explanation.district].filter(Boolean).join(" · ")}</p>
+                      </div>
+                      <span className={`vote-badge vote-${explanation.vote}`}>Voted {explanation.vote === "yes" ? "Yes" : "No"}</span>
+                    </header>
+                    <div className="explanation-body">
+                      <div>
+                        <p className="explanation-label">Why they voted this way</p>
+                        <p className="explanation-reason">{explanation.reason}</p>
+                      </div>
+                      <div className="explanation-source">
+                        <MessageSquareQuote size={20} aria-hidden="true" />
+                        <div>
+                          <span>Public statement</span>
+                          <small>{explanation.source.label}</small>
+                          <a href={explanation.source.url} target="_blank" rel="noreferrer">
+                            <PlayCircle size={17} aria-hidden="true" /> Watch the statement
+                          </a>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+              {explanationScan?.status === "complete" ? <p className="explanation-footnote">If a lawmaker is not listed, we couldn&apos;t find a published reason.</p> : null}
+            </>
+          ) : explanationScan?.status === "complete" ? (
+            <div className="explanation-empty"><SearchX size={21} aria-hidden="true" /><span>Couldn&apos;t find a published reason.</span></div>
+          ) : (
+            <p className="explanation-empty">We are still checking public recordings for this bill.</p>
+          )}
+        </section>
+      ) : null}
 
       {data.roll_calls?.length ? (
         <section className="content-section" aria-labelledby="votes-title">

@@ -28,19 +28,23 @@ from app.db import (
     get_analytics_overview,
     get_bill,
     get_bill_relationships_for_bill,
+    get_bill_vote_explanation_scan,
     get_jurisdiction_rollups,
     get_legislator_voting_record,
     get_dashboard_counts,
     get_latest_bill_refresh,
     get_sync_status,
+    get_vote_explanation_overview,
     init_db,
     list_available_tags,
     list_bill_amendments,
     list_bill_roll_calls,
+    list_bill_vote_explanations,
     list_bills,
     list_legislator_vote_summaries,
     list_recent_bills,
     list_sync_statuses,
+    list_vote_explanation_bill_keys,
     list_years,
     normalize_special_session,
     search_bills,
@@ -931,6 +935,55 @@ def _roll_call_json(roll_call: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _seconds_label(value: object) -> str:
+    seconds = max(0, int(value or 0))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+
+
+def _source_url_at_time(source_url: str, seconds: int) -> str:
+    if "youtu.be/" in source_url or "youtube.com/" in source_url:
+        separator = "&" if "?" in source_url else "?"
+        return f"{source_url}{separator}t={max(0, seconds)}s"
+    return f"{source_url}#t={max(0, seconds)}"
+
+
+def _vote_explanation_json(explanation: dict[str, object]) -> dict[str, object]:
+    chamber = str(explanation.get("chamber") or "")
+    start_seconds = max(0, int(explanation.get("source_start_seconds") or 0))
+    return {
+        "member_key": explanation.get("member_key"),
+        "name": explanation.get("lawmaker_name"),
+        "party": explanation.get("party"),
+        "district": explanation.get("district"),
+        "chamber": chamber,
+        "title": chamber_title(chamber),
+        "vote": explanation.get("vote_position"),
+        "roll_call_key": explanation.get("roll_call_key"),
+        "vote_date": explanation.get("vote_date"),
+        "action": explanation.get("action"),
+        "reason": explanation.get("reason_summary"),
+        "statement_date": explanation.get("statement_date"),
+        "profile_href": f"/area/wyoming/legislators/{explanation.get('member_key')}",
+        "source": {
+            "label": f"Floor statement at {_seconds_label(start_seconds)}",
+            "url": _source_url_at_time(str(explanation.get("source_url") or ""), start_seconds),
+            "title": explanation.get("source_title"),
+            "start_seconds": start_seconds,
+        },
+    }
+
+
+def _vote_explanation_scan_json(scan: dict[str, object] | None) -> dict[str, object] | None:
+    if scan is None:
+        return None
+    return {
+        "status": scan.get("scan_status"),
+        "last_scanned_at": scan.get("last_scanned_at"),
+    }
+
+
 PUBLIC_MODEL_METADATA_KEYS = {"generator_model", "interpretation_model", "model", "model_name"}
 
 
@@ -1446,6 +1499,51 @@ def api_legislator_voting_record(
     )
 
 
+@app.get("/api/v1/areas/{area_slug}/vote-explanations")
+def api_vote_explanations(
+    area_slug: str,
+    year: int | None = Query(default=None),
+    limit: int = Query(default=60, ge=1, le=200),
+) -> JSONResponse:
+    jurisdiction = get_jurisdiction(area_slug)
+    if jurisdiction is None or jurisdiction.state_code != "wy":
+        raise HTTPException(status_code=404, detail="Vote explanations are not available for this area")
+    overview = get_vote_explanation_overview("wy")
+    available_years = list(overview.get("available_years") or [])
+    selected_year = year if year is not None else (available_years[0] if available_years else None)
+    bills = []
+    for key in list_vote_explanation_bill_keys("wy", year=selected_year, limit=limit):
+        bill = get_bill(
+            "wy",
+            int(key["year"]),
+            str(key["bill_num"]),
+            special_session_value=key.get("special_session_value"),
+        )
+        if bill is None:
+            continue
+        bills.append(
+            {
+                "bill": _bill_summary_json(jurisdiction, bill),
+                "explanation_count": int(key.get("explanation_count") or 0),
+                "latest_statement_date": key.get("latest_statement_date"),
+            }
+        )
+    raw_sync_status = get_sync_status("wy")
+    return _public_json_response(
+        {
+            "jurisdiction": _jurisdiction_json(
+                jurisdiction,
+                last_scanned_at=_last_scanned_at(raw_sync_status),
+            ),
+            "available_years": available_years,
+            "selected_year": selected_year,
+            "last_scanned_at": overview.get("last_scanned_at"),
+            "bills": bills,
+        },
+        max_age=60,
+    )
+
+
 @app.get("/api/v1/areas/{area_slug}/bills/{year}/{bill_num}")
 def api_bill_detail(
     area_slug: str,
@@ -1477,6 +1575,26 @@ def api_bill_detail(
         bill_num,
         special_session_value=special_session,
     )
+    vote_explanations = []
+    vote_explanation_scan = None
+    if jurisdiction.state_code == "wy":
+        vote_explanations = [
+            _vote_explanation_json(item)
+            for item in list_bill_vote_explanations(
+                "wy",
+                year,
+                bill_num,
+                special_session_value=special_session,
+            )
+        ]
+        vote_explanation_scan = _vote_explanation_scan_json(
+            get_bill_vote_explanation_scan(
+                "wy",
+                year,
+                bill_num,
+                special_session_value=special_session,
+            )
+        )
     relationships = []
     if jurisdiction.kind == "state":
         raw_relationships = get_bill_relationships_for_bill(
@@ -1529,6 +1647,8 @@ def api_bill_detail(
             "official_links": _official_links_for_bill(jurisdiction, bill),
             "actions": actions,
             "roll_calls": [_roll_call_json(item) for item in roll_calls],
+            "vote_explanations": vote_explanations,
+            "vote_explanation_scan": vote_explanation_scan,
             "amendments": amendments,
             "relationships": relationships,
         },
