@@ -51,12 +51,6 @@ export default async function AreaPage({ params, searchParams }: { params: Route
         </dl>
       </section>
 
-      {data.sync_status ? (
-        <div className={data.sync_status.is_running ? "sync-bar sync-running" : "sync-bar"}>
-          <strong>{data.sync_status.headline}</strong><span>{data.sync_status.detail}</span>
-        </div>
-      ) : null}
-
       <form className="filter-bar" action={`/area/${slug}`} method="get">
         <label className="filter-field filter-year">
           <span>{data.jurisdiction.kind === "federal" ? "Congress" : "Year"}</span>

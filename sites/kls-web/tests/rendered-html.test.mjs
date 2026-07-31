@@ -77,6 +77,18 @@ test("renders Wyoming scan and bill dates for regular people", async () => {
   assert.doesNotMatch(html, /\bUTC\b|2026-03-09T00:00:00/);
 });
 
+test("shows the latest scan without background sync details", async () => {
+  const response = await render(
+    "/area/wyoming",
+    "https://www.keepinglawsimple.org",
+  );
+  assert.equal(response.status, 200);
+
+  const html = await response.text();
+  assert.match(html, /Last scanned/);
+  assert.doesNotMatch(html, /Background sync|\bUTC\b/);
+});
+
 test("keeps vote explanations scoped to Wyoming and out of primary navigation", async () => {
   const [oldBetaResponse, otherStateResponse] = await Promise.all([
     render(
