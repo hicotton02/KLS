@@ -4,14 +4,19 @@ import test from "node:test";
 
 const templateRoot = new URL("../", import.meta.url);
 
-async function render() {
+async function render(pathname = "/", origin = "http://localhost") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
+  const requestUrl = new URL(pathname, origin);
 
   return worker.fetch(
-    new Request("http://localhost/", {
-      headers: { accept: "text/html" },
+    new Request(requestUrl, {
+      headers: {
+        accept: "text/html",
+        host: requestUrl.host,
+        "x-forwarded-host": requestUrl.host,
+      },
     }),
     {
       ASSETS: {
@@ -39,6 +44,33 @@ test("server-renders the KLS home page", async () => {
   assert.match(html, /action="\/search"/);
   assert.match(html, /Official sources\. Neutral summaries\./);
   assert.doesNotMatch(html, /codex-preview|taking shape|react-loading-skeleton/i);
+});
+
+test("renders the private Wyoming vote-explanation beta", async () => {
+  const response = await render("/beta/wyoming/vote-explanations");
+  assert.equal(response.status, 200);
+
+  const html = await response.text();
+  assert.match(html, /Private beta/);
+  assert.match(html, /Why did they vote that way\?/);
+  assert.match(html, /Art Washut/);
+  assert.match(html, /Pam Thayer/);
+  assert.match(html, /Elissa Campbell/);
+  assert.match(html, /Scott Smith/);
+  assert.match(html, /Couldn(?:'|&#x27;)t find a published reason/);
+  assert.match(html, /youtube\.com\/watch\?v=X45rOkJsR2g&amp;t=8464s/);
+  assert.doesNotMatch(html, /model|confidence score|AI-generated/i);
+});
+
+test("keeps the beta off the public host and primary navigation", async () => {
+  const publicResponse = await render(
+    "/beta/wyoming/vote-explanations",
+    "https://www.keepinglawsimple.org",
+  );
+  assert.equal(publicResponse.status, 404);
+
+  const header = await readFile(new URL("../app/components/SiteHeader.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(header, /vote-explanations|Wyoming votes/i);
 });
 
 test("contains product metadata and no starter or model details", async () => {
