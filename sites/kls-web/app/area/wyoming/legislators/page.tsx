@@ -53,7 +53,7 @@ export default async function WyomingLegislatorsPage({ searchParams }: { searchP
               <article className="legislator-row" key={legislator.member_key}>
                 <div>
                   <span>{legislator.title}</span>
-                  <h3><Link href={legislator.profile_href}>{legislator.legislator_name}</Link></h3>
+                  <h3><Link href={`${legislator.profile_href}?year=${filters.year || legislator.latest_year}`}>{legislator.legislator_name}</Link></h3>
                   <p>{[legislator.party, legislator.district].filter(Boolean).join(" · ") || "District unavailable"}</p>
                 </div>
                 <dl>
@@ -61,7 +61,7 @@ export default async function WyomingLegislatorsPage({ searchParams }: { searchP
                   <div><dt>No</dt><dd>{legislator.no_count}</dd></div>
                   <div><dt>Roll calls</dt><dd>{legislator.total_votes}</dd></div>
                 </dl>
-                <Link className="row-arrow" href={legislator.profile_href} aria-label={`Open ${legislator.legislator_name}'s voting record`}><ChevronRight size={20} /></Link>
+                <Link className="row-arrow" href={`${legislator.profile_href}?year=${filters.year || legislator.latest_year}`} aria-label={`Open ${legislator.legislator_name}'s voting record`}><ChevronRight size={20} /></Link>
               </article>
             ))}
           </div>

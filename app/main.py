@@ -41,6 +41,7 @@ from app.db import (
     list_bill_roll_calls,
     list_bill_vote_explanations,
     list_bills,
+    list_legislator_vote_explanations,
     list_legislator_vote_summaries,
     list_recent_bills,
     list_sync_statuses,
@@ -1486,6 +1487,23 @@ def api_legislator_voting_record(
         query_string = "" if special_session is None else f"?{urlencode({'special_session': special_session})}"
         vote["bill_href"] = f"/area/wyoming/bill/{vote_year}/{bill_num}{query_string}"
 
+    published_reasons = []
+    for explanation in list_legislator_vote_explanations("wy", member_key, year=year, limit=50):
+        bill = get_bill(
+            "wy",
+            int(explanation["year"]),
+            str(explanation["bill_num"]),
+            special_session_value=explanation.get("special_session_value"),
+        )
+        if bill is None:
+            continue
+        published_reasons.append(
+            {
+                "bill": _bill_summary_json(jurisdiction, bill),
+                "explanation": _vote_explanation_json(explanation),
+            }
+        )
+
     raw_sync_status = get_sync_status("wy")
     return _public_json_response(
         {
@@ -1494,6 +1512,7 @@ def api_legislator_voting_record(
                 last_scanned_at=_last_scanned_at(raw_sync_status),
             ),
             **record,
+            "published_reasons": published_reasons,
         },
         max_age=60,
     )

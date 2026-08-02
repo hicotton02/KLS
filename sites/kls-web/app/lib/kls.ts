@@ -218,10 +218,18 @@ export type LegislatorVote = {
   year: number;
   special_session_value: number | null;
   bill_num: string;
+  roll_call_key: string;
+  vote_id: string | null;
   vote_position: "yes" | "no" | "absent" | "conflict" | "excused" | "other";
   vote_date: string | null;
+  vote_type: string | null;
   action: string | null;
   amendment_number: string | null;
+  yes_count: number;
+  no_count: number;
+  absent_count: number;
+  conflict_count: number;
+  excused_count: number;
   catch_title: string | null;
   bill_title: string | null;
   outcome: string | null;
@@ -246,6 +254,10 @@ export type LegislatorRecordResponse = {
   coverage: { unattributed_roll_calls: number };
   year_breakdown: Array<Record<string, number>>;
   votes: LegislatorVote[];
+  published_reasons?: Array<{
+    bill: BillSummary;
+    explanation: VoteExplanation;
+  }>;
 };
 
 const API_BASE_URL = (process.env.KLS_API_BASE_URL ?? "https://www.keepinglawsimple.org").replace(/\/$/, "");

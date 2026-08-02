@@ -1740,6 +1740,58 @@ def list_bill_vote_explanations(
     return [dict(row) for row in rows]
 
 
+def list_legislator_vote_explanations(
+    state: str,
+    member_key: str,
+    *,
+    year: int | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    clauses = [
+        "explanations.state = ?",
+        "explanations.member_key = ?",
+        "explanations.review_status IN ('publishable', 'curated')",
+    ]
+    params: list[Any] = [state, member_key]
+    if year is not None:
+        clauses.append("explanations.year = ?")
+        params.append(year)
+    params.append(max(1, min(int(limit), 100)))
+
+    with connect() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT explanations.*,
+                   votes.party,
+                   votes.district,
+                   roll_calls.chamber,
+                   roll_calls.vote_date,
+                   roll_calls.action
+            FROM bill_vote_explanations AS explanations
+            LEFT JOIN bill_roll_call_votes AS votes
+              ON votes.state = explanations.state
+             AND votes.year = explanations.year
+             AND votes.special_session_key = explanations.special_session_key
+             AND votes.bill_num = explanations.bill_num
+             AND votes.roll_call_key = explanations.roll_call_key
+             AND votes.member_key = explanations.member_key
+            LEFT JOIN bill_roll_calls AS roll_calls
+              ON roll_calls.state = explanations.state
+             AND roll_calls.year = explanations.year
+             AND roll_calls.special_session_key = explanations.special_session_key
+             AND roll_calls.bill_num = explanations.bill_num
+             AND roll_calls.roll_call_key = explanations.roll_call_key
+            WHERE {' AND '.join(clauses)}
+            ORDER BY explanations.statement_date DESC,
+                     explanations.source_start_seconds ASC,
+                     explanations.bill_num ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def list_vote_explanation_bill_keys(
     state: str,
     *,

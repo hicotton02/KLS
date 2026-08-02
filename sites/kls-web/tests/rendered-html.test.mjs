@@ -113,6 +113,30 @@ test("keeps vote explanations scoped to Wyoming and out of primary navigation", 
   await assert.rejects(access(new URL("../app/lib/vote-explanations.ts", import.meta.url)));
 });
 
+test("renders the simple legislator profile only under Wyoming", async () => {
+  const profileResponse = await render(
+    "/area/wyoming/legislators/wy-2093?year=2026",
+    "https://www.keepinglawsimple.org",
+  );
+  assert.equal(profileResponse.status, 200);
+
+  const html = await profileResponse.text();
+  assert.match(html, /Scott Smith/);
+  assert.match(html, /At a glance/);
+  assert.match(html, /usually vote with the/);
+  assert.match(html, /explained why/);
+  assert.match(html, /Couldn(?:'|&#x27;)t find a published reason/);
+  assert.match(html, /Show the/);
+  assert.match(html, /latest votes/);
+  assert.doesNotMatch(html, /Local beta|not published|model|confidence score|AI-generated/i);
+
+  const oldBetaResponse = await render(
+    "/beta/wyoming/scott-smith",
+    "https://www.keepinglawsimple.org",
+  );
+  assert.equal(oldBetaResponse.status, 404);
+});
+
 test("contains product metadata and no starter or model details", async () => {
   const [page, header, billPage, apiClient, layout, nextConfig, dockerfile, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

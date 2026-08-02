@@ -259,6 +259,10 @@ def test_explanations_are_stored_and_exposed_without_model_metadata() -> None:
     stored_scan = get_bill_vote_explanation_scan("wy", 2098, "SF0101")
     response = TestClient(app).get("/api/v1/areas/wyoming/bills/2098/SF0101")
     index_response = TestClient(app).get("/api/v1/areas/wyoming/vote-explanations", params={"year": 2098})
+    profile_response = TestClient(app).get(
+        "/api/v1/areas/wyoming/legislators/wy-101",
+        params={"year": 2098},
+    )
 
     assert stored_media[0]["transcript_json"][0]["start"] == 100
     assert stored_explanations[0]["lawmaker_name"] == "Pat Example"
@@ -274,3 +278,9 @@ def test_explanations_are_stored_and_exposed_without_model_metadata() -> None:
     assert "model" not in str(payload).casefold()
     assert index_response.status_code == 200
     assert index_response.json()["bills"][0]["bill"]["bill_num"] == "SF0101"
+    assert profile_response.status_code == 200
+    published_reason = profile_response.json()["published_reasons"][0]
+    assert published_reason["bill"]["bill_num"] == "SF0101"
+    assert published_reason["explanation"]["member_key"] == "wy-101"
+    assert published_reason["explanation"]["reason"] == "The lawmaker said the wording was unclear."
+    assert "model" not in str(profile_response.json()).casefold()
