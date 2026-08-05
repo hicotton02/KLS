@@ -15,10 +15,10 @@ from urllib.parse import urlparse
 import httpx
 import geoip2.database
 from fastapi import Request
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from starlette.responses import Response
 
-from app.db import cleanup_page_views, record_page_view
+from app.db import cleanup_page_views, get_vote_explanation_overview, record_page_view
 from app.settings import Settings
 
 
@@ -53,6 +53,11 @@ TRACKED_PAGE_VIEWS_BY_LOCATION_TOTAL = Counter(
     "Server-side tracked HTML page views by traffic type and city-region location.",
     ["traffic_type", "country_code", "region_code", "region_name", "city_name", "latitude", "longitude"],
 )
+LEGISLATIVE_MEDIA_BACKLOG = Gauge(
+    "kls_legislative_media_backlog",
+    "Legislative media items waiting for a pipeline stage.",
+    ["state", "stage"],
+)
 
 BOT_PATTERN = re.compile(
     r"(bot|crawl|spider|slurp|fetch|headless|preview|monitor|scan|python-requests|curl|wget|go-http-client)",
@@ -69,6 +74,16 @@ TRACKING_SKIP_PATHS = {
 
 
 def metrics_response() -> Response:
+    try:
+        overview = get_vote_explanation_overview("wy")
+        LEGISLATIVE_MEDIA_BACKLOG.labels(state="wy", stage="transcription").set(
+            int(overview.get("transcription_backlog") or 0)
+        )
+        LEGISLATIVE_MEDIA_BACKLOG.labels(state="wy", stage="reasoning").set(
+            int(overview.get("reasoning_backlog") or 0)
+        )
+    except Exception:  # pragma: no cover - request metrics must survive a database outage.
+        pass
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 

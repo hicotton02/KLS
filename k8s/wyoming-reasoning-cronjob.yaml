@@ -15,8 +15,8 @@ spec:
     spec:
       activeDeadlineSeconds: 21600
       backoffLimit: 2
-      completions: 2
-      parallelism: 2
+      completions: 4
+      parallelism: 4
       ttlSecondsAfterFinished: 3600
       template:
         metadata:

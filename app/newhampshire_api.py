@@ -9,6 +9,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from app.http_documents import absolute_url, fetch_document_text
+from app.http_retry import get_with_retries
 from app.settings import Settings
 from app.text_utils import clean_text, first_non_empty
 
@@ -82,7 +83,13 @@ class NewHampshireApiClient:
         self.client.close()
 
     def fetch_year_bills(self, year: int) -> list[dict[str, Any]]:
-        response = self.client.get(NEW_HAMPSHIRE_RESULTS_TEMPLATE.format(year=year))
+        response = get_with_retries(
+            self.client,
+            NEW_HAMPSHIRE_RESULTS_TEMPLATE.format(year=year),
+            max_attempts=5,
+            base_delay_seconds=2,
+            max_delay_seconds=15,
+        )
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -149,6 +156,8 @@ class NewHampshireApiClient:
                 ),
             }
 
+        if not items_by_bill:
+            raise ValueError(f"New Hampshire source returned no bill links for {year}")
         return sorted(items_by_bill.values(), key=lambda item: _sort_bill_key(str(item["billNum"])))
 
     def fetch_bill_detail(self, detail_path: str, item: dict[str, Any] | None = None) -> dict[str, Any]:

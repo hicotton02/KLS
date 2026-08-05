@@ -147,6 +147,49 @@ CREATE INDEX IF NOT EXISTS idx_bill_roll_call_votes_bill
 ON bill_roll_call_votes(state, year, bill_num, special_session_key, roll_call_key);
 CREATE INDEX IF NOT EXISTS idx_bill_roll_call_votes_member
 ON bill_roll_call_votes(state, member_key, year);
+CREATE INDEX IF NOT EXISTS idx_bill_roll_call_votes_state_updated
+ON bill_roll_call_votes(state, updated_at);
+
+CREATE TABLE IF NOT EXISTS legislator_member_aliases (
+    state TEXT NOT NULL,
+    alias_member_key TEXT NOT NULL,
+    canonical_member_key TEXT NOT NULL,
+    resolution_method TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(state, alias_member_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_legislator_member_aliases_canonical
+ON legislator_member_aliases(state, canonical_member_key);
+
+CREATE TABLE IF NOT EXISTS legislator_vote_summary_cache (
+    state TEXT NOT NULL,
+    member_key TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    source_legislator_id TEXT,
+    legislator_name TEXT NOT NULL,
+    party TEXT,
+    district TEXT,
+    chamber TEXT,
+    total_votes INTEGER NOT NULL DEFAULT 0,
+    bills_voted INTEGER NOT NULL DEFAULT 0,
+    yes_count INTEGER NOT NULL DEFAULT 0,
+    no_count INTEGER NOT NULL DEFAULT 0,
+    absent_count INTEGER NOT NULL DEFAULT 0,
+    conflict_count INTEGER NOT NULL DEFAULT 0,
+    excused_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(state, member_key, year)
+);
+
+CREATE INDEX IF NOT EXISTS idx_legislator_vote_summary_cache_name
+ON legislator_vote_summary_cache(state, legislator_name);
+
+CREATE TABLE IF NOT EXISTS legislator_vote_summary_status (
+    state TEXT PRIMARY KEY,
+    source_marker TEXT NOT NULL,
+    refreshed_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS legislative_media (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1893,12 +1936,20 @@ def list_legislator_vote_explanations(
     year: int | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
+    canonical_member_key = _canonical_legislator_member_key(state, member_key)
     clauses = [
         "explanations.state = ?",
-        "explanations.member_key = ?",
+        """(
+            explanations.member_key = ?
+            OR explanations.member_key IN (
+                SELECT alias_member_key
+                FROM legislator_member_aliases
+                WHERE state = ? AND canonical_member_key = ?
+            )
+        )""",
         "explanations.review_status IN ('publishable', 'curated')",
     ]
-    params: list[Any] = [state, member_key]
+    params: list[Any] = [state, canonical_member_key, state, canonical_member_key]
     if year is not None:
         clauses.append("explanations.year = ?")
         params.append(year)
@@ -1975,6 +2026,8 @@ def get_vote_explanation_overview(state: str) -> dict[str, Any]:
             SELECT COUNT(*) AS media_total,
                    SUM(CASE WHEN transcript_status = 'available' THEN 1 ELSE 0 END) AS media_transcribed,
                    SUM(CASE WHEN explanation_scan_status = 'complete' THEN 1 ELSE 0 END) AS media_scanned,
+                   SUM(CASE WHEN transcript_status IN ('pending', 'transcribing') THEN 1 ELSE 0 END) AS transcription_backlog,
+                   SUM(CASE WHEN transcript_status = 'available' AND explanation_scan_status IN ('pending', 'scanning') THEN 1 ELSE 0 END) AS reasoning_backlog,
                    MAX(explanation_scanned_at) AS last_scanned_at
             FROM legislative_media WHERE state = ?
             """,
@@ -2052,6 +2105,198 @@ def count_bill_vote_explanations(
     return int(row["total"] or 0) if row is not None else 0
 
 
+def _legislator_vote_source_marker(
+    connection: sqlite3.Connection | PostgresConnection,
+    state: str,
+) -> str:
+    row = connection.execute(
+        """
+        SELECT COUNT(*) AS total, MAX(updated_at) AS latest_updated_at
+        FROM bill_roll_call_votes
+        WHERE state = ?
+        """,
+        (state,),
+    ).fetchone()
+    values = dict(row) if row is not None else {}
+    return f"{int(values.get('total') or 0)}:{str(values.get('latest_updated_at') or '')}"
+
+
+def _single_surname(value: object) -> str | None:
+    name = str(value or "").strip()
+    if re.fullmatch(r"[A-Za-z][A-Za-z'-]*", name) is None:
+        return None
+    return name.casefold()
+
+
+def _last_name(value: object) -> str:
+    parts = str(value or "").strip().split()
+    return parts[-1].strip(".,").casefold() if parts else ""
+
+
+def refresh_legislator_vote_summaries(state: str) -> None:
+    refreshed_at = iso_now()
+    with connect() as connection:
+        if isinstance(connection, PostgresConnection):
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(?))",
+                (f"legislator-vote-summary:{state}",),
+            )
+        source_marker = _legislator_vote_source_marker(connection, state)
+        identity_rows = connection.execute(
+            """
+            SELECT member_key,
+                   MAX(source_legislator_id) AS source_legislator_id,
+                   MAX(legislator_name) AS legislator_name
+            FROM bill_roll_call_votes
+            WHERE state = ?
+            GROUP BY member_key
+            """,
+            (state,),
+        ).fetchall()
+        identities = [dict(row) for row in identity_rows]
+
+        canonical_by_surname: dict[str, set[str]] = {}
+        for row in identities:
+            if not row.get("source_legislator_id"):
+                continue
+            surname = _last_name(row.get("legislator_name"))
+            if surname:
+                canonical_by_surname.setdefault(surname, set()).add(str(row["member_key"]))
+
+        aliases: list[dict[str, str]] = []
+        for row in identities:
+            if row.get("source_legislator_id"):
+                continue
+            surname = _single_surname(row.get("legislator_name"))
+            candidates = canonical_by_surname.get(surname or "", set())
+            if surname and len(candidates) == 1:
+                aliases.append(
+                    {
+                        "state": state,
+                        "alias_member_key": str(row["member_key"]),
+                        "canonical_member_key": next(iter(candidates)),
+                        "resolution_method": "unique_surname",
+                        "updated_at": refreshed_at,
+                    }
+                )
+
+        connection.execute("DELETE FROM legislator_member_aliases WHERE state = ?", (state,))
+        if aliases:
+            connection.executemany(
+                """
+                INSERT INTO legislator_member_aliases (
+                    state, alias_member_key, canonical_member_key, resolution_method, updated_at
+                ) VALUES (
+                    :state, :alias_member_key, :canonical_member_key, :resolution_method, :updated_at
+                )
+                """,
+                aliases,
+            )
+
+        summary_rows = connection.execute(
+            """
+            SELECT
+                COALESCE(aliases.canonical_member_key, votes.member_key) AS member_key,
+                votes.year,
+                COALESCE(
+                    MAX(CASE WHEN aliases.alias_member_key IS NULL THEN votes.source_legislator_id END),
+                    MAX(votes.source_legislator_id)
+                ) AS source_legislator_id,
+                COALESCE(
+                    MAX(CASE WHEN aliases.alias_member_key IS NULL THEN votes.legislator_name END),
+                    MAX(votes.legislator_name)
+                ) AS legislator_name,
+                COALESCE(
+                    MAX(CASE WHEN aliases.alias_member_key IS NULL THEN votes.party END),
+                    MAX(votes.party)
+                ) AS party,
+                COALESCE(
+                    MAX(CASE WHEN aliases.alias_member_key IS NULL THEN votes.district END),
+                    MAX(votes.district)
+                ) AS district,
+                COALESCE(
+                    MAX(CASE WHEN aliases.alias_member_key IS NULL THEN votes.chamber END),
+                    MAX(votes.chamber)
+                ) AS chamber,
+                COUNT(*) AS total_votes,
+                COUNT(DISTINCT CAST(votes.year AS TEXT) || ':' || votes.bill_num || ':' || CAST(votes.special_session_key AS TEXT)) AS bills_voted,
+                SUM(CASE WHEN votes.vote_position = 'yes' THEN 1 ELSE 0 END) AS yes_count,
+                SUM(CASE WHEN votes.vote_position = 'no' THEN 1 ELSE 0 END) AS no_count,
+                SUM(CASE WHEN votes.vote_position = 'absent' THEN 1 ELSE 0 END) AS absent_count,
+                SUM(CASE WHEN votes.vote_position = 'conflict' THEN 1 ELSE 0 END) AS conflict_count,
+                SUM(CASE WHEN votes.vote_position = 'excused' THEN 1 ELSE 0 END) AS excused_count
+            FROM bill_roll_call_votes AS votes
+            LEFT JOIN legislator_member_aliases AS aliases
+              ON aliases.state = votes.state
+             AND aliases.alias_member_key = votes.member_key
+            WHERE votes.state = ?
+            GROUP BY COALESCE(aliases.canonical_member_key, votes.member_key), votes.year
+            """,
+            (state,),
+        ).fetchall()
+
+        connection.execute("DELETE FROM legislator_vote_summary_cache WHERE state = ?", (state,))
+        if summary_rows:
+            connection.executemany(
+                """
+                INSERT INTO legislator_vote_summary_cache (
+                    state, member_key, year, source_legislator_id, legislator_name,
+                    party, district, chamber, total_votes, bills_voted, yes_count,
+                    no_count, absent_count, conflict_count, excused_count, updated_at
+                ) VALUES (
+                    :state, :member_key, :year, :source_legislator_id, :legislator_name,
+                    :party, :district, :chamber, :total_votes, :bills_voted, :yes_count,
+                    :no_count, :absent_count, :conflict_count, :excused_count, :updated_at
+                )
+                """,
+                [
+                    {
+                        **dict(row),
+                        "state": state,
+                        "updated_at": refreshed_at,
+                    }
+                    for row in summary_rows
+                ],
+            )
+        connection.execute(
+            """
+            INSERT INTO legislator_vote_summary_status (state, source_marker, refreshed_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(state) DO UPDATE SET
+                source_marker = excluded.source_marker,
+                refreshed_at = excluded.refreshed_at
+            """,
+            (state, source_marker, refreshed_at),
+        )
+        connection.commit()
+
+
+def _ensure_legislator_vote_summaries(state: str) -> None:
+    with connect() as connection:
+        source_marker = _legislator_vote_source_marker(connection, state)
+        status = connection.execute(
+            "SELECT source_marker FROM legislator_vote_summary_status WHERE state = ?",
+            (state,),
+        ).fetchone()
+    status_values = dict(status) if status is not None else {}
+    if str(status_values.get("source_marker") or "") != source_marker:
+        refresh_legislator_vote_summaries(state)
+
+
+def _canonical_legislator_member_key(state: str, member_key: str) -> str:
+    _ensure_legislator_vote_summaries(state)
+    with connect() as connection:
+        row = connection.execute(
+            """
+            SELECT canonical_member_key
+            FROM legislator_member_aliases
+            WHERE state = ? AND alias_member_key = ?
+            """,
+            (state, member_key),
+        ).fetchone()
+    return str(row["canonical_member_key"]) if row is not None else member_key
+
+
 def list_legislator_vote_summaries(
     state: str,
     *,
@@ -2059,6 +2304,7 @@ def list_legislator_vote_summaries(
     year: int | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
+    _ensure_legislator_vote_summaries(state)
     clauses = ["state = ?"]
     params: list[Any] = [state]
     if year is not None:
@@ -2081,14 +2327,14 @@ def list_legislator_vote_summaries(
             MAX(district) AS district,
             MAX(chamber) AS chamber,
             MAX(year) AS latest_year,
-            COUNT(*) AS total_votes,
-            COUNT(DISTINCT CAST(year AS TEXT) || ':' || bill_num || ':' || CAST(special_session_key AS TEXT)) AS bills_voted,
-            SUM(CASE WHEN vote_position = 'yes' THEN 1 ELSE 0 END) AS yes_count,
-            SUM(CASE WHEN vote_position = 'no' THEN 1 ELSE 0 END) AS no_count,
-            SUM(CASE WHEN vote_position = 'absent' THEN 1 ELSE 0 END) AS absent_count,
-            SUM(CASE WHEN vote_position = 'conflict' THEN 1 ELSE 0 END) AS conflict_count,
-            SUM(CASE WHEN vote_position = 'excused' THEN 1 ELSE 0 END) AS excused_count
-        FROM bill_roll_call_votes
+            SUM(total_votes) AS total_votes,
+            SUM(bills_voted) AS bills_voted,
+            SUM(yes_count) AS yes_count,
+            SUM(no_count) AS no_count,
+            SUM(absent_count) AS absent_count,
+            SUM(conflict_count) AS conflict_count,
+            SUM(excused_count) AS excused_count
+        FROM legislator_vote_summary_cache
         WHERE {' AND '.join(clauses)}
         GROUP BY member_key
         ORDER BY legislator_name ASC
@@ -2106,6 +2352,7 @@ def get_legislator_voting_record(
     year: int | None = None,
     limit: int = 200,
 ) -> dict[str, Any] | None:
+    canonical_member_key = _canonical_legislator_member_key(state, member_key)
     with connect() as connection:
         rows = connection.execute(
             """
@@ -2147,10 +2394,18 @@ def get_legislator_voting_record(
              AND bills.year = votes.year
              AND bills.special_session_key = votes.special_session_key
              AND bills.bill_num = votes.bill_num
-            WHERE votes.state = ? AND votes.member_key = ?
+            WHERE votes.state = ?
+              AND (
+                  votes.member_key = ?
+                  OR votes.member_key IN (
+                      SELECT alias_member_key
+                      FROM legislator_member_aliases
+                      WHERE state = ? AND canonical_member_key = ?
+                  )
+              )
             ORDER BY roll_calls.vote_date DESC, votes.year DESC, votes.bill_num ASC
             """,
-            (state, member_key),
+            (state, canonical_member_key, state, canonical_member_key),
         ).fetchall()
 
     all_votes = [dict(row) for row in rows]
@@ -2177,6 +2432,18 @@ def get_legislator_voting_record(
     coverage_years = [year] if year is not None else available_years
     year_placeholders = ", ".join("?" for _ in coverage_years)
     with connect() as connection:
+        identity_row = connection.execute(
+            """
+            SELECT source_legislator_id, legislator_name, party, district, chamber
+            FROM legislator_vote_summary_cache
+            WHERE state = ? AND member_key = ?
+            ORDER BY year DESC
+            LIMIT 1
+            """,
+            (state, canonical_member_key),
+        ).fetchone()
+        identity = dict(identity_row) if identity_row is not None else {}
+        coverage_chamber = identity.get("chamber") or latest.get("chamber")
         coverage_row = connection.execute(
             f"""
             SELECT COUNT(*) AS unattributed_roll_calls
@@ -2199,16 +2466,16 @@ def get_legislator_voting_record(
                   + roll_calls.conflict_count + roll_calls.excused_count
               ) > COALESCE(vote_counts.attributed_votes, 0)
             """,
-            (state, latest.get("chamber"), *coverage_years),
+            (state, coverage_chamber, *coverage_years),
         ).fetchone()
     return {
         "legislator": {
-            "member_key": latest["member_key"],
-            "source_legislator_id": latest.get("source_legislator_id"),
-            "name": latest.get("legislator_name"),
-            "party": latest.get("party"),
-            "district": latest.get("district"),
-            "chamber": latest.get("chamber"),
+            "member_key": canonical_member_key,
+            "source_legislator_id": identity.get("source_legislator_id") or latest.get("source_legislator_id"),
+            "name": identity.get("legislator_name") or latest.get("legislator_name"),
+            "party": identity.get("party") or latest.get("party"),
+            "district": identity.get("district") or latest.get("district"),
+            "chamber": coverage_chamber,
         },
         "available_years": available_years,
         "selected_year": year,

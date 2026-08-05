@@ -53,6 +53,7 @@ def test_metrics_endpoint_exposes_prometheus_metrics() -> None:
     assert "kls_tracked_page_views_by_route_total" in response.text
     assert "kls_tracked_page_views_by_country_total" in response.text
     assert "kls_tracked_page_views_by_location_total" in response.text
+    assert 'kls_legislative_media_backlog{stage="transcription",state="wy"} 0.0' in response.text
 
 
 def test_metrics_endpoint_is_hidden_on_public_hosts() -> None:

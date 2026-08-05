@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from app.michigan_api import MichiganApiClient
 from app.settings import get_settings
@@ -44,10 +45,12 @@ def test_fetch_year_bills_parses_search_tables() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/Search/ExecuteSearch"):
             doc_type = request.url.params.get("docTypes")
-            if doc_type == "House Bill":
-                return httpx.Response(200, text=house_html, request=request)
-            if doc_type == "Senate Bill":
-                return httpx.Response(200, text=senate_html, request=request)
+            if doc_type == "House Bill,Senate Bill":
+                return httpx.Response(
+                    200,
+                    text=house_html.replace("</body></html>", "") + senate_html,
+                    request=request,
+                )
         raise AssertionError(f"Unexpected request: {request.method} {request.url}")
 
     api.client = httpx.Client(
@@ -65,6 +68,25 @@ def test_fetch_year_bills_parses_search_tables() -> None:
     assert bills[0]["detailPath"] == "https://www.legislature.mi.gov/Bills/Bill?ObjectName=2025-HB-4001"
     assert bills[1]["chapter"] == "PA 2 of 2025"
     assert bills[2]["lastAction"] == "REFERRED TO COMMITTEE ON EDUCATION"
+
+
+def test_fetch_year_bills_rejects_an_empty_success_page() -> None:
+    settings = get_settings()
+    api = MichiganApiClient(settings)
+    api.close()
+    api.client = httpx.Client(
+        base_url=settings.michigan_site_base,
+        follow_redirects=True,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text="<html><body>Temporarily unavailable</body></html>", request=request)
+        ),
+    )
+
+    try:
+        with pytest.raises(ValueError, match="returned no House or Senate bills"):
+            api.fetch_year_bills(2026)
+    finally:
+        api.close()
 
 
 def test_fetch_bill_detail_parses_documents_history_and_amendments() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from app.newhampshire_api import NewHampshireApiClient
 from app.settings import get_settings
@@ -61,6 +62,25 @@ def test_fetch_year_bills_parses_results_page() -> None:
     assert items[0]["lastAction"] == "PASSED/ADOPTED"
     assert items[0]["currentVersionPath"].endswith("txtFormat=html")
     assert items[0]["detailPath"].endswith("lsr=3064&sy=2026&txtsessionyear=2026&sortoption=")
+
+
+def test_fetch_year_bills_rejects_an_empty_success_page() -> None:
+    settings = get_settings()
+    api = NewHampshireApiClient(settings)
+    api.close()
+    api.client = httpx.Client(
+        base_url=settings.new_hampshire_site_base,
+        follow_redirects=True,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text="<html><body>Service notice</body></html>", request=request)
+        ),
+    )
+
+    try:
+        with pytest.raises(ValueError, match="returned no bill links"):
+            api.fetch_year_bills(2026)
+    finally:
+        api.close()
 
 
 def test_fetch_bill_detail_parses_status_and_docket() -> None:

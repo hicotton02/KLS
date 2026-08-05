@@ -8,6 +8,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from app.http_documents import absolute_url, fetch_document_text
+from app.http_retry import get_with_retries
 from app.settings import Settings
 from app.text_utils import clean_text, first_non_empty
 
@@ -73,52 +74,56 @@ class MichiganApiClient:
         session_label = self._session_label(year)
         items: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for doc_type in ("House Bill", "Senate Bill"):
-            response = self.client.get(
-                "/Search/ExecuteSearch",
-                params={"sessions": session_label, "docTypes": doc_type},
-            )
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-            table = soup.find("table")
-            if table is None:
+        response = get_with_retries(
+            self.client,
+            "/Search/ExecuteSearch",
+            params={"sessions": session_label, "docTypes": "House Bill,Senate Bill"},
+            max_attempts=5,
+            retry_status_codes={404, 429, 500, 502, 503, 504},
+            base_delay_seconds=2,
+            max_delay_seconds=15,
+        )
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        for row in soup.find_all("tr"):
+            cells = row.find_all("td")
+            if len(cells) < 3:
                 continue
-            for row in table.find_all("tr"):
-                cells = row.find_all("td")
-                if len(cells) < 3:
-                    continue
-                anchor = cells[0].find("a", href=True)
-                if anchor is None:
-                    continue
-                object_name = self._object_name_from_href(anchor.get("href"))
-                bill_num = normalize_michigan_bill_number(anchor.get_text(" ", strip=True))
-                if not object_name or not bill_num or bill_num in seen:
-                    continue
-                seen.add(bill_num)
-                detail_path = absolute_url(
-                    self.settings.michigan_site_base,
-                    f"/Bills/Bill?ObjectName={object_name}",
-                )
-                title, last_action = self._search_result_description(cells[2])
-                public_act = self._public_act(cells[0].get_text(" ", strip=True))
-                items.append(
-                    {
-                        "billNum": bill_num,
-                        "billType": bill_num[:2],
-                        "catchTitle": title or bill_num,
-                        "billTitle": title or bill_num,
-                        "sponsor": "",
-                        "billStatus": first_non_empty(last_action, public_act),
-                        "lastAction": last_action,
-                        "lastActionDate": "",
-                        "signedDate": "",
-                        "effectiveDate": "",
-                        "chapter": public_act,
-                        "enrolledNumber": public_act,
-                        "detailPath": detail_path,
-                        "objectName": object_name,
-                    }
-                )
+            anchor = cells[0].find("a", href=True)
+            if anchor is None:
+                continue
+            object_name = self._object_name_from_href(anchor.get("href"))
+            bill_num = normalize_michigan_bill_number(anchor.get_text(" ", strip=True))
+            if not object_name or not bill_num or bill_num in seen:
+                continue
+            seen.add(bill_num)
+            detail_path = absolute_url(
+                self.settings.michigan_site_base,
+                f"/Bills/Bill?ObjectName={object_name}",
+            )
+            title, last_action = self._search_result_description(cells[2])
+            public_act = self._public_act(cells[0].get_text(" ", strip=True))
+            items.append(
+                {
+                    "billNum": bill_num,
+                    "billType": bill_num[:2],
+                    "catchTitle": title or bill_num,
+                    "billTitle": title or bill_num,
+                    "sponsor": "",
+                    "billStatus": first_non_empty(last_action, public_act),
+                    "lastAction": last_action,
+                    "lastActionDate": "",
+                    "signedDate": "",
+                    "effectiveDate": "",
+                    "chapter": public_act,
+                    "enrolledNumber": public_act,
+                    "detailPath": detail_path,
+                    "objectName": object_name,
+                }
+            )
+
+        if not items:
+            raise ValueError(f"Michigan source returned no House or Senate bills for {session_label}")
 
         return sorted(items, key=lambda item: _sort_bill_key(str(item["billNum"])))
 

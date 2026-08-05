@@ -319,11 +319,13 @@ const FALLBACK_AREAS: Jurisdiction[] = [
   },
 ];
 
-async function fetchKls<T>(path: string): Promise<T | null> {
+async function fetchKls<T>(path: string, revalidateSeconds = 0): Promise<T | null> {
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
       headers: { Accept: "application/json" },
-      cache: "no-store",
+      ...(revalidateSeconds > 0
+        ? { next: { revalidate: revalidateSeconds } }
+        : { cache: "no-store" as RequestCache }),
     });
     if (!response.ok) return null;
     return (await response.json()) as T;
@@ -425,6 +427,7 @@ export async function getVoteExplanations(year?: string): Promise<VoteExplanatio
 export async function getLegislators(filters: { q?: string; year?: string }): Promise<LegislatorsResponse | null> {
   return fetchKls<LegislatorsResponse>(
     `/api/v1/areas/wyoming/legislators${queryString({ ...filters, limit: 150 })}`,
+    60,
   );
 }
 
@@ -434,6 +437,7 @@ export async function getLegislatorVotingRecord(
 ): Promise<LegislatorRecordResponse | null> {
   return fetchKls<LegislatorRecordResponse>(
     `/api/v1/areas/wyoming/legislators/${encodeURIComponent(memberKey)}${queryString({ year })}`,
+    60,
   );
 }
 

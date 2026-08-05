@@ -385,6 +385,82 @@ def test_public_api_exposes_bill_roll_calls_and_legislator_record() -> None:
     _assert_no_public_model_metadata(record)
 
 
+def test_legislator_directory_merges_unique_surname_aliases_and_refreshes_cache() -> None:
+    init_db()
+    timestamp = "2098-02-21T21:03:17+00:00"
+    for bill_num in ("HB2100", "SB2101"):
+        _seed_state_bill(bill_num, f"Recorded vote for {bill_num}", year=2098)
+
+    def store_vote(bill_num: str, member: dict[str, object], vote_id: str) -> None:
+        replace_bill_roll_calls(
+            "wy",
+            2098,
+            bill_num,
+            payloads=[
+                {
+                    "roll_call_key": f"h-{vote_id}",
+                    "vote_id": vote_id,
+                    "chamber": "H",
+                    "vote_date": timestamp,
+                    "vote_type": "F",
+                    "action": "H 3rd Reading:Passed",
+                    "amendment_number": None,
+                    "yes_count": 1,
+                    "no_count": 0,
+                    "absent_count": 0,
+                    "conflict_count": 0,
+                    "excused_count": 0,
+                    "members": [{**member, "vote_position": "yes"}],
+                    "source_synced_at": timestamp,
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                }
+            ],
+        )
+
+    store_vote(
+        "HB2100",
+        {
+            "member_key": "wy-1995",
+            "source_legislator_id": "1995",
+            "legislator_name": "Eric Barlow",
+            "vote_label": "Barlow",
+            "party": "R",
+            "district": "S23",
+        },
+        "5400",
+    )
+    client = TestClient(app)
+    first = client.get("/api/v1/areas/wyoming/legislators", params={"q": "barlow"})
+    assert first.json()["legislators"][0]["total_votes"] == 1
+
+    store_vote(
+        "SB2101",
+        {
+            "member_key": "wy-h-barlow",
+            "source_legislator_id": None,
+            "legislator_name": "Barlow",
+            "vote_label": "Barlow",
+            "party": None,
+            "district": None,
+        },
+        "5401",
+    )
+
+    directory = client.get("/api/v1/areas/wyoming/legislators", params={"q": "barlow"})
+    assert directory.status_code == 200
+    legislators = directory.json()["legislators"]
+    assert len(legislators) == 1
+    assert legislators[0]["member_key"] == "wy-1995"
+    assert legislators[0]["legislator_name"] == "Eric Barlow"
+    assert legislators[0]["total_votes"] == 2
+
+    alias_profile = client.get("/api/v1/areas/wyoming/legislators/wy-h-barlow")
+    assert alias_profile.status_code == 200
+    assert alias_profile.json()["legislator"]["member_key"] == "wy-1995"
+    assert alias_profile.json()["counts"]["total"] == 2
+
+
 def test_home_shows_compact_sync_status() -> None:
     init_db()
     update_sync_status(
