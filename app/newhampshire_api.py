@@ -9,12 +9,13 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from app.http_documents import absolute_url, fetch_document_text
-from app.http_retry import get_with_retries
+from app.http_retry import get_with_retries, post_with_retries
 from app.settings import Settings
 from app.text_utils import clean_text, first_non_empty
 
 
 NEW_HAMPSHIRE_RESULTS_TEMPLATE = "/bill_status/legacy/bs2016/results.aspx?lsr=&sy=&txtsessionyear={year}&sortoption="
+NEW_HAMPSHIRE_CURRENT_SEARCH_PATH = "/bill_status/advanced.aspx"
 NEW_HAMPSHIRE_STATUS_TEMPLATE = (
     "/bill_status/legacy/bs2016/bill_status.aspx?lsr={lsr}&sy={year}&txtsessionyear={year}&sortoption="
 )
@@ -157,8 +158,141 @@ class NewHampshireApiClient:
             }
 
         if not items_by_bill:
+            items_by_bill = self._fetch_current_search_bills(year)
+        if not items_by_bill:
             raise ValueError(f"New Hampshire source returned no bill links for {year}")
         return sorted(items_by_bill.values(), key=lambda item: _sort_bill_key(str(item["billNum"])))
+
+    def _fetch_current_search_bills(self, year: int) -> dict[str, dict[str, Any]]:
+        search_response = get_with_retries(
+            self.client,
+            NEW_HAMPSHIRE_CURRENT_SEARCH_PATH,
+            max_attempts=5,
+            base_delay_seconds=2,
+            max_delay_seconds=15,
+        )
+        search_response.raise_for_status()
+        search_soup = BeautifulSoup(search_response.text, "html.parser")
+        payload = self._webforms_payload(search_soup)
+        if not payload:
+            return {}
+
+        results_response = post_with_retries(
+            self.client,
+            NEW_HAMPSHIRE_CURRENT_SEARCH_PATH,
+            data=payload,
+            max_attempts=5,
+            base_delay_seconds=2,
+            max_delay_seconds=15,
+        )
+        results_response.raise_for_status()
+        results_soup = BeautifulSoup(results_response.text, "html.parser")
+
+        items_by_bill: dict[str, dict[str, Any]] = {}
+        for bill_cell in results_soup.select("div.BS-ResultsCol1BN"):
+            status_link = bill_cell.find("a", href=re.compile(r"billinfo\.aspx\?", re.IGNORECASE))
+            if status_link is None:
+                continue
+            result_year = self._current_result_year(bill_cell)
+            if result_year is not None and result_year != year:
+                continue
+
+            bill_num = normalize_new_hampshire_bill_number(status_link.get_text(" ", strip=True))
+            if not bill_num or bill_num in items_by_bill:
+                continue
+            card = bill_cell.parent
+            if card is None:
+                continue
+
+            title = self._current_result_title(card) or bill_num
+            status_map = self._current_result_status_map(card)
+            general_status = status_map.get("General Status", "")
+            house_status = status_map.get("House Status", "")
+            senate_status = status_map.get("Senate Status", "")
+            hearing_value = status_map.get("Next/Last Hearing", "")
+            detail_path = absolute_url(str(results_response.url), status_link.get("href")) or ""
+
+            items_by_bill[bill_num] = {
+                "billNum": bill_num,
+                "billType": _bill_type(bill_num),
+                "catchTitle": title,
+                "billTitle": title,
+                "sponsor": "",
+                "billStatus": self._primary_status(general_status, house_status, senate_status),
+                "lastAction": self._primary_status(house_status, senate_status, general_status),
+                "lastActionDate": "",
+                "signedDate": "",
+                "effectiveDate": "",
+                "chapter": "",
+                "enrolledNumber": bill_num,
+                "detailPath": detail_path,
+                "docketPath": "",
+                "currentVersionPath": "",
+                "currentVersionFingerprint": "|".join(
+                    part
+                    for part in (
+                        bill_num,
+                        title,
+                        general_status,
+                        house_status,
+                        senate_status,
+                        hearing_value,
+                        detail_path,
+                    )
+                    if clean_text(str(part))
+                ),
+            }
+        return items_by_bill
+
+    @staticmethod
+    def _webforms_payload(soup: BeautifulSoup) -> dict[str, str]:
+        form = soup.find("form")
+        if form is None:
+            return {}
+        payload: dict[str, str] = {}
+        for control in form.find_all(["input", "select", "textarea"]):
+            name = clean_text(control.get("name"))
+            if not name or control.has_attr("disabled"):
+                continue
+            if control.name == "select":
+                selected = control.find("option", selected=True) or control.find("option")
+                payload[name] = clean_text(selected.get("value")) if selected is not None else ""
+                continue
+            control_type = clean_text(control.get("type") or "text").lower()
+            if control_type in {"button", "reset", "image", "submit"}:
+                continue
+            if control_type in {"checkbox", "radio"} and not control.has_attr("checked"):
+                continue
+            payload[name] = str(control.get("value") or "")
+        payload["ctl00$pageBody$btnSubmit"] = "Submit"
+        return payload
+
+    @staticmethod
+    def _current_result_year(bill_cell: Tag) -> int | None:
+        match = re.search(r"(?:Session\s+)?Year:\s*(\d{4})", bill_cell.get_text(" ", strip=True), re.IGNORECASE)
+        return int(match.group(1)) if match is not None else None
+
+    @staticmethod
+    def _current_result_title(card: Tag) -> str:
+        for cell in card.select("div.BS-ResultsCol2"):
+            label = cell.find("b")
+            if label is None or clean_text(label.get_text(" ", strip=True)).rstrip(":").lower() != "title":
+                continue
+            return clean_text(re.sub(r"^Title:\s*", "", cell.get_text(" ", strip=True), flags=re.IGNORECASE))
+        return ""
+
+    @staticmethod
+    def _current_result_status_map(card: Tag) -> dict[str, str]:
+        data: dict[str, str] = {}
+        for row in card.find_all("div", recursive=False):
+            label_cell = row.find("div", class_="BS-ResultsCol1")
+            value_cell = row.find("div", class_="BS-ResultsCol2")
+            if label_cell is None or value_cell is None:
+                continue
+            label = clean_text(label_cell.get_text(" ", strip=True)).rstrip(":")
+            if label:
+                data[label] = clean_text(value_cell.get_text(" ", strip=True))
+        return data
 
     def fetch_bill_detail(self, detail_path: str, item: dict[str, Any] | None = None) -> dict[str, Any]:
         response = self.client.get(detail_path)

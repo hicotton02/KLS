@@ -55,14 +55,17 @@ existing summaries and do not wait for summary generation.
 The recording pipeline is split into three bounded CronJobs:
 
 1. `keeping-law-simple-wyoming-media-discovery` catalogs recordings hourly.
-2. `keeping-law-simple-wyoming-transcriptions` runs two workers, each claiming up to four recordings.
-3. `keeping-law-simple-wyoming-reasoning` runs two workers, each claiming up to two completed transcripts.
+2. `keeping-law-simple-wyoming-transcriptions` runs 24 lightweight producers, each claiming up to four recordings and submitting GPU work through the durable STT queue.
+3. `keeping-law-simple-wyoming-reasoning` runs four workers, each claiming up to two completed transcripts.
 
 Transcription and reason extraction claim work with conditional database
 updates before processing. A second worker cannot claim the same recording.
 Claims abandoned by a failed pod become eligible again after the matching
 Kubernetes job deadline. This gives the historical queue more throughput
 without assigning GPUs directly to KLS pods or starving interactive services.
+The durable queue holds excess requests while the GPU capacity broker assigns
+compatible idle slots. Producer timeouts cover the queue's full two-hour wait
+window, so a queued request can finish without the caller abandoning it.
 Items that fail transcription or reason extraction wait six hours before they
 can be claimed again, preventing a bad recording from spinning in a tight loop.
 Reason extraction uses the shared service's background queue and a timeout that

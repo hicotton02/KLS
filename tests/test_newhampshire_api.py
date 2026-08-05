@@ -83,6 +83,62 @@ def test_fetch_year_bills_rejects_an_empty_success_page() -> None:
         api.close()
 
 
+def test_fetch_year_bills_falls_back_to_current_search() -> None:
+    settings = get_settings()
+    api = NewHampshireApiClient(settings)
+    api.close()
+    search_form = """
+    <html><body><form method="post">
+      <input type="hidden" name="__VIEWSTATE" value="state-token">
+      <input type="submit" name="ctl00$pageBody$btnSubmit" value="Submit">
+    </form></body></html>
+    """
+    results_html = """
+    <html><body><div id="dvResultsWrap"><div><div style="background-color: #EBEBEB">
+      <div class="BS-ResultsCol1BN">
+        <a href="billinfo.aspx?id=1843">HB1159-FN</a><br>Session Year: <b>2026</b>
+      </div>
+      <div class="BS-ResultsCol2"><b>Title:</b> relative to updating the state building code.</div>
+      <div style="clear: both">
+        <div class="BS-ResultsCol1">General Status:</div><div class="BS-ResultsCol2">SIGNED BY GOVERNOR</div>
+      </div>
+      <div style="clear: both">
+        <div class="BS-ResultsCol1">House Status:</div><div class="BS-ResultsCol2">CONCURRED</div>
+      </div>
+      <div style="clear: both">
+        <div class="BS-ResultsCol1">Senate Status:</div><div class="BS-ResultsCol2">PASSED/ADOPTED WITH AMENDMENT</div>
+      </div>
+    </div></div></div></body></html>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/legacy/bs2016/results.aspx"):
+            return httpx.Response(200, text="<html><body>Legacy search retired</body></html>", request=request)
+        if request.url.path.endswith("/advanced.aspx") and request.method == "GET":
+            return httpx.Response(200, text=search_form, request=request)
+        if request.url.path.endswith("/advanced.aspx") and request.method == "POST":
+            assert b"ctl00%24pageBody%24btnSubmit=Submit" in request.content
+            return httpx.Response(200, text=results_html, request=request)
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    api.client = httpx.Client(
+        base_url=settings.new_hampshire_site_base,
+        follow_redirects=True,
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        items = api.fetch_year_bills(2026)
+    finally:
+        api.close()
+
+    assert len(items) == 1
+    assert items[0]["billNum"] == "HB1159"
+    assert items[0]["billStatus"] == "SIGNED BY GOVERNOR"
+    assert items[0]["lastAction"] == "CONCURRED"
+    assert items[0]["detailPath"].endswith("billinfo.aspx?id=1843")
+
+
 def test_fetch_bill_detail_parses_status_and_docket() -> None:
     settings = get_settings()
     api = NewHampshireApiClient(settings)
