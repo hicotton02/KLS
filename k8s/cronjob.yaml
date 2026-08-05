@@ -17,11 +17,12 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      completions: 8
-      parallelism: 8
+      completions: 52
+      parallelism: 32
       completionMode: Indexed
       activeDeadlineSeconds: 82800
-      backoffLimit: 0
+      backoffLimitPerIndex: 1
+      maxFailedIndexes: 52
       template:
         metadata:
           labels:
@@ -58,7 +59,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: sync
-              image: registry.skazproconsulting.com/keeping-law-simple/web:20260731-localtime1@sha256:bf55cb5144495b6aaaa7058b29290780720df27d5f00a33b129851787d1fdf72
+              image: registry.skazproconsulting.com/keeping-law-simple/web:20260804-source32-1
               imagePullPolicy: IfNotPresent
               command:
                 - sh
@@ -72,31 +73,32 @@ spec:
                   import os
                   from dataclasses import asdict
 
-                  from app.sync_service import sync_states
+                  from app.sync_service import SYNC_STATE_ORDER, sync_state_by_name
 
 
                   raw_index = os.environ.get("JOB_COMPLETION_INDEX")
                   if raw_index is None:
                       raw_index = os.environ.get("HOSTNAME", "").rsplit("-", 1)[-1]
                   index = int(raw_index)
-                  shards = [line.strip() for line in os.environ["KLS_SYNC_SHARDS"].splitlines() if line.strip()]
-                  if index < 0 or index >= len(shards):
-                      raise RuntimeError(f"KLS sync shard index {index} is outside 0..{len(shards) - 1}.")
+                  if index < 0 or index >= len(SYNC_STATE_ORDER):
+                      raise RuntimeError(
+                          f"KLS sync index {index} is outside 0..{len(SYNC_STATE_ORDER) - 1}."
+                      )
 
-                  states = shards[index].split()
-                  print(f"Starting KLS sync shard {index}: {' '.join(states)}", flush=True)
-                  completed, failed = sync_states(
-                      states,
+                  state = SYNC_STATE_ORDER[index]
+                  print(f"Starting source-only KLS sync {index}: {state}", flush=True)
+                  stats = sync_state_by_name(
+                      state,
+                      skip_interpretation=True,
                       logger=print,
-                      stale_after_seconds=int(os.environ.get("KLS_STALE_SYNC_SECONDS", "21600")),
                   )
                   print(
                       json.dumps(
                           {
-                              "shard": index,
-                              "states": states,
-                              "completed": {state: asdict(stats) for state, stats in completed.items()},
-                              "failed": failed,
+                              "index": index,
+                              "state": state,
+                              "source_only": True,
+                              "stats": asdict(stats),
                           },
                           indent=2,
                       ),
@@ -106,18 +108,6 @@ spec:
               env:
                 - name: KLS_SYNC_PARALLELISM
                   value: "1"
-                - name: KLS_STALE_SYNC_SECONDS
-                  value: "21600"
-                - name: KLS_SYNC_SHARDS
-                  value: |
-                    alabama alaska arizona arkansas california colorado connecticut
-                    delaware district_of_columbia federal florida georgia hawaii idaho
-                    illinois indiana iowa kansas kentucky louisiana maine
-                    maryland massachusetts michigan minnesota mississippi missouri montana
-                    nebraska nevada new_hampshire new_jersey new_mexico new_york north_carolina
-                    north_dakota ohio oklahoma oregon pennsylvania rhode_island south_carolina
-                    south_dakota tennessee texas utah vermont virginia washington
-                    west_virginia wisconsin wyoming
                 - name: PGPASSWORD
                   valueFrom:
                     secretKeyRef:

@@ -3891,23 +3891,37 @@ SYNC_STATE_FUNCTIONS: dict[str, Callable[..., SyncStats]] = {
     "wyoming": sync_wyoming,
 }
 
+# Start the highest-value public feeds immediately, then fan out across every
+# remaining jurisdiction in stable alphabetical order.
+SYNC_STATE_ORDER: tuple[str, ...] = (
+    "wyoming",
+    "federal",
+    *(state for state in sorted(SYNC_STATE_FUNCTIONS) if state not in {"wyoming", "federal"}),
+)
+
 
 def normalize_sync_state_name(value: str) -> str:
     return str(value or "").strip().lower().replace("-", "_")
 
 
-def sync_state_by_name(state_name: str, *, logger: Logger | None = None) -> SyncStats:
+def sync_state_by_name(
+    state_name: str,
+    *,
+    skip_interpretation: bool = False,
+    logger: Logger | None = None,
+) -> SyncStats:
     normalized = normalize_sync_state_name(state_name)
     sync_func = SYNC_STATE_FUNCTIONS.get(normalized)
     if sync_func is None:
         valid_states = ", ".join(sorted(SYNC_STATE_FUNCTIONS))
         raise ValueError(f"Unknown KLS sync state {state_name!r}. Valid states: {valid_states}")
-    return sync_func(logger=logger)
+    return sync_func(skip_interpretation=skip_interpretation, logger=logger)
 
 
 def sync_states(
     state_names: list[str],
     *,
+    skip_interpretation: bool = False,
     logger: Logger | None = None,
     stale_after_seconds: int = 21600,
 ) -> tuple[dict[str, SyncStats], dict[str, str]]:
@@ -3925,7 +3939,11 @@ def sync_states(
     for state_name in selected_states:
         log(f"Starting {state_name} sync")
         try:
-            completed[state_name] = sync_state_by_name(state_name, logger=log)
+            completed[state_name] = sync_state_by_name(
+                state_name,
+                skip_interpretation=skip_interpretation,
+                logger=log,
+            )
         except Exception as exc:  # noqa: BLE001
             failed[state_name] = str(exc)
             log(f"State {state_name} sync failed: {exc}")

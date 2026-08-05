@@ -306,3 +306,50 @@ def test_source_hash_ignores_status_only_changes() -> None:
     )
 
     assert hash_a == hash_b
+
+
+def test_indexed_sync_order_covers_every_jurisdiction_once() -> None:
+    assert len(sync_service.SYNC_STATE_ORDER) == 52
+    assert len(set(sync_service.SYNC_STATE_ORDER)) == 52
+    assert set(sync_service.SYNC_STATE_ORDER) == set(sync_service.SYNC_STATE_FUNCTIONS)
+    assert sync_service.SYNC_STATE_ORDER[:2] == ("wyoming", "federal")
+
+
+def test_sync_state_by_name_forwards_source_only_mode(monkeypatch) -> None:
+    calls: list[tuple[bool, object]] = []
+    logger = calls.append
+
+    def fake_sync(*, skip_interpretation: bool, logger):
+        calls.append((skip_interpretation, logger))
+        return sync_service.SyncStats(years=[2026])
+
+    monkeypatch.setitem(sync_service.SYNC_STATE_FUNCTIONS, "wyoming", fake_sync)
+
+    stats = sync_service.sync_state_by_name(
+        "Wyoming",
+        skip_interpretation=True,
+        logger=logger,
+    )
+
+    assert stats.years == [2026]
+    assert calls == [(True, logger)]
+
+
+def test_sync_states_forwards_source_only_mode(monkeypatch) -> None:
+    calls: list[tuple[str, bool]] = []
+
+    def fake_sync_state_by_name(state_name: str, *, skip_interpretation: bool, logger):
+        calls.append((state_name, skip_interpretation))
+        return sync_service.SyncStats(years=[2026])
+
+    monkeypatch.setattr(sync_service, "sync_state_by_name", fake_sync_state_by_name)
+    monkeypatch.setattr(sync_service, "reset_stale_sync_statuses", lambda *_args, **_kwargs: 0)
+
+    completed, failed = sync_service.sync_states(
+        ["wyoming", "federal"],
+        skip_interpretation=True,
+    )
+
+    assert list(completed) == ["wyoming", "federal"]
+    assert failed == {}
+    assert calls == [("wyoming", True), ("federal", True)]

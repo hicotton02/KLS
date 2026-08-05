@@ -70,8 +70,9 @@ The transcription policy is applied separately because it belongs to the
 `automation` namespace; the main Kustomize set is scoped to `keeping-law-simple`.
 
 The production sync CronJob is an Indexed Job with 52 completions and
-`parallelism: 8`, so each state/DC/federal sync has its own pod while cluster
-load stays bounded.
+`parallelism: 32`, so each state/DC/federal source refresh has its own pod while
+cluster load stays bounded. Wyoming and federal start first. This lane preserves
+existing plain-language summaries but does not wait for summary generation.
 
 Wyoming recording discovery runs hourly. Transcription and voting-reason
 extraction run as separate two-pod jobs, with atomic database claims preventing

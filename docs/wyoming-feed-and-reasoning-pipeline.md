@@ -21,7 +21,7 @@ Status: production worker design. Published-statement discovery remains beta.
 - Failed recording and extraction rows are not automatically retried.
 - Bill explanation status refresh performs one count query per bill.
 
-Those issues are addressed by the production worker layout below. Transcription uses the existing shared service; KLS workers stay CPU-only and use bounded claims so they do not reserve accelerator capacity or duplicate work.
+The serial source-feed and recording issues are addressed by the production worker layout below. Transcription uses the existing shared service; KLS workers stay CPU-only and use bounded work so they do not reserve accelerator capacity or duplicate recordings.
 
 ## Transcription benchmark result
 
@@ -46,6 +46,12 @@ The validated path is wired into the production transcription worker. A complete
 
 ## Production worker layout
 
+The nationwide source refresh is one Indexed CronJob with 52 completions and
+32 concurrent pods. Each completion owns exactly one state, D.C., or federal
+feed. Wyoming and federal occupy the first two indexes, so a slow source cannot
+leave either one waiting behind another jurisdiction. Source workers preserve
+existing summaries and do not wait for summary generation.
+
 The recording pipeline is split into three bounded CronJobs:
 
 1. `keeping-law-simple-wyoming-media-discovery` catalogs recordings hourly.
@@ -67,13 +73,15 @@ requests or abandon a request while it is still waiting normally.
 
 ### 1. Official-source lane
 
-Run Wyoming independently every 15 minutes during the session and every hour outside the session.
+Wyoming has its own source-refresh completion and starts in the first worker
+wave. The long-term freshness target remains every 15 minutes during the
+session and every hour outside the session.
 
-1. Claim the state with an atomic database lease.
+1. Select exactly one jurisdiction from the indexed completion number.
 2. Fetch bill, action, sponsor, vote, and roster changes.
-3. Store only changed source records and update `last_source_scan_at`.
-4. Emit durable enrichment tasks for changed bills.
-5. Release the lease even when one source endpoint fails.
+3. Store changed source records and update the jurisdiction scan status.
+4. Preserve existing summaries without waiting for new summary generation.
+5. Fail and retry only that jurisdiction when its source endpoint fails.
 
 This lane must not wait for summaries, transcripts, article searches, or reason extraction.
 
