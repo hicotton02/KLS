@@ -48,6 +48,7 @@ the platform/Kubernetes repo:
 
 - Gateway API parent `gateway-system/skazpro-public` with KLS root and www sections.
 - `ai-inference-ollama.ai-platform.svc.cluster.local` for interpretation generation.
+- `automation-stt-gpu1-router.automation.svc.cluster.local` for Wyoming archive transcription.
 - `truenas-csi-iscsi-rwo` storage class for Postgres.
 - Prometheus Operator/Grafana sidecar for `ServiceMonitor` and dashboard config maps.
 - The automation namespace Godaddy API if applying the optional domain sync CronJob.
@@ -60,9 +61,13 @@ Create real Kubernetes secrets outside Git before applying the manifests:
 Apply the current production app set:
 
 ```bash
+kubectl apply -f k8s/automation-allow-keeping-law-simple-stt.yaml
 kubectl apply -k k8s
 kubectl create job --from=cronjob/keeping-law-simple-sync keeping-law-simple-sync-now -n keeping-law-simple
 ```
+
+The transcription policy is applied separately because it belongs to the
+`automation` namespace; the main Kustomize set is scoped to `keeping-law-simple`.
 
 The production sync CronJob is an Indexed Job with 52 completions and
 `parallelism: 8`, so each state/DC/federal sync has its own pod while cluster
