@@ -109,7 +109,7 @@ class OllamaClient:
             lawmakers=lawmakers,
             transcript=transcript,
         )
-        parsed = self._run_json_prompt(prompt, temperature=0.0, top_p=0.25, num_predict=1400)
+        parsed = self._run_json_prompt(prompt, temperature=0.0, top_p=0.25, num_predict=2200)
         statements = parsed.get("statements") if isinstance(parsed, dict) else []
         if not isinstance(statements, list):
             return []

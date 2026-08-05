@@ -1,6 +1,6 @@
 # Wyoming freshness and voting-reason pipeline
 
-Status: beta design only. Do not deploy from this document.
+Status: production worker design. Published-statement discovery remains beta.
 
 ## What the citizen sees
 
@@ -11,7 +11,7 @@ Status: beta design only. Do not deploy from this document.
 - When no qualifying statement is available, show: **Couldn't find a published reason.**
 - Never show inference engine, backend, prompt, or model details in the public site or public API.
 
-## Current bottlenecks observed on August 4, 2026
+## Bottlenecks observed before the August 4, 2026 rollout
 
 - Two eight-pod source jobs overlap and repeat the same state work.
 - Wyoming waits behind West Virginia and Wisconsin in a static shard.
@@ -21,7 +21,7 @@ Status: beta design only. Do not deploy from this document.
 - Failed recording and extraction rows are not automatically retried.
 - Bill explanation status refresh performs one count query per bill.
 
-Adding general CPU pods will not fix those queue and ownership problems. Transcription should use the existing shared GPU service after the benchmark passes.
+Those issues are addressed by the production worker layout below. Transcription uses the existing shared service; KLS workers stay CPU-only and use bounded claims so they do not reserve accelerator capacity or duplicate work.
 
 ## Transcription benchmark result
 
@@ -42,9 +42,28 @@ Final evidence set:
 
 The final evidence combines the complete ten-recording run with one targeted rerun after adding the sparse-heavy-rejection guard. That guard changed only the targeted recording: the other nine did not meet its combined rejection-and-density condition.
 
-The benchmark path is validated, but it is not wired into the production worker yet. A completed transcription request is still not a quality pass.
+The validated path is wired into the production transcription worker. A completed transcription request is still not a quality pass; the same repetition, density, and bill-reference checks remain required before a transcript is accepted.
 
-## Proposed lanes
+## Production worker layout
+
+The recording pipeline is split into three bounded CronJobs:
+
+1. `keeping-law-simple-wyoming-media-discovery` catalogs recordings hourly.
+2. `keeping-law-simple-wyoming-transcriptions` runs two workers, each claiming up to four recordings.
+3. `keeping-law-simple-wyoming-reasoning` runs two workers, each claiming up to two completed transcripts.
+
+Transcription and reason extraction claim work with conditional database
+updates before processing. A second worker cannot claim the same recording.
+Claims abandoned by a failed pod become eligible again after the matching
+Kubernetes job deadline. This gives the historical queue more throughput
+without assigning GPUs directly to KLS pods or starving interactive services.
+Items that fail transcription or reason extraction wait six hours before they
+can be claimed again, preventing a bad recording from spinning in a tight loop.
+Reason extraction uses the shared service's background queue and a timeout that
+matches the queue window, so historical work cannot jump ahead of interactive
+requests or abandon a request while it is still waiting normally.
+
+## Pipeline lanes
 
 ### 1. Official-source lane
 
@@ -68,7 +87,7 @@ This lane must not wait for summaries, transcripts, article searches, or reason 
 
 ### 3. Official-recording lane
 
-Split the current worker into four independently retryable stages:
+The production worker is split into independently retryable stages:
 
 1. Discover new Wyoming recordings once per year/session scan.
 2. Prefer published captions; queue only missing captions for transcription.
@@ -79,9 +98,15 @@ Split the current worker into four independently retryable stages:
 7. Extract bill sections and personal voting explanations per bill.
 8. Refresh bill-level coverage with set-based SQL.
 
-Use statuses `pending`, `leased`, `complete`, `retryable_failed`, and `permanent_failed`. Store attempt count and next retry time. Timeouts and malformed extraction output are retryable.
+Caption downloads use bounded retries. A temporary caption error, including a
+publisher `429`, falls through to the configured transcription service instead
+of marking the recording permanently failed.
 
-Long transcription leases need heartbeats. Submit no more than one KLS backfill request at a time until the shared GPU service has admission control. Fresh and interactive workloads keep priority; KLS historical work waits without duplicating itself.
+The current statuses are `pending`, `transcribing`, `scanning`, `available`, `complete`, and `failed`. Failed transcription and reasoning rows become eligible again after a six-hour cooldown. Stale `transcribing` claims expire after three hours, and stale `scanning` claims expire after six hours. Timeouts and malformed extraction output therefore return to the queue without creating a tight retry loop.
+
+Long transcription claims expire after three hours. Reason-extraction claims
+expire after six hours. Fresh and interactive workloads keep priority; KLS
+historical work uses bounded parallelism and waits without duplicating itself.
 
 ### 4. Published-statement lane
 

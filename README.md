@@ -6,13 +6,13 @@ Keeping Law Simple is the standalone app and deployment repo for
 It pulls official legislative data for the 50 states, DC, and federal bills,
 stores the normalized bill data in Postgres, serves the public FastAPI/Jinja
 site, tracks app metrics, and can generate neutral plain-English explanations
-through the shared Ollama service.
+through the shared inference service.
 
 ## Repo Layout
 
 - `app/`: FastAPI app, state/federal source clients, sync service, database layer, templates, and static assets.
 - `tests/`: source-client, sync, app, database, analytics, and utility tests.
-- `k8s/`: production Kubernetes manifests for the KLS namespace, web app, Postgres, sync CronJob, metrics, and legacy/backfill jobs.
+- `k8s/`: production Kubernetes manifests for the KLS namespace, web app, Postgres, sync jobs, Wyoming media workers, and metrics.
 - `scripts/migrate_kls_sqlite_to_postgres.py`: one-time migration helper for the old SQLite data store.
 - `docs/state-source-inventory.md`: current source inventory for all state integrations.
 
@@ -47,7 +47,7 @@ The KLS repo owns the app manifests. Shared platform dependencies still live in
 the platform/Kubernetes repo:
 
 - Gateway API parent `gateway-system/skazpro-public` with KLS root and www sections.
-- `ai-inference-ollama.ai-platform.svc.cluster.local` for interpretation generation.
+- The shared inference service for interpretation generation.
 - `automation-stt-gpu1-router.automation.svc.cluster.local` for Wyoming archive transcription.
 - `truenas-csi-iscsi-rwo` storage class for Postgres.
 - Prometheus Operator/Grafana sidecar for `ServiceMonitor` and dashboard config maps.
@@ -72,6 +72,10 @@ The transcription policy is applied separately because it belongs to the
 The production sync CronJob is an Indexed Job with 52 completions and
 `parallelism: 8`, so each state/DC/federal sync has its own pod while cluster
 load stays bounded.
+
+Wyoming recording discovery runs hourly. Transcription and voting-reason
+extraction run as separate two-pod jobs, with atomic database claims preventing
+workers from processing the same recording.
 
 ## Secret Policy
 

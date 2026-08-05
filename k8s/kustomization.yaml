@@ -10,6 +10,8 @@ resources:
   - service.yaml
   - ingress.yaml
   - cronjob.yaml
-  - wyoming-explanation-cronjob.yaml
+  - wyoming-media-discovery-cronjob.yaml
+  - wyoming-transcription-cronjob.yaml
+  - wyoming-reasoning-cronjob.yaml
   - servicemonitor.yaml
   - monitoring/keeping-law-simple-traffic-dashboard.yaml

@@ -1455,6 +1455,152 @@ def list_legislative_media(
     return [parsed for row in rows if (parsed := _parse_legislative_media_row(row)) is not None]
 
 
+def _claim_legislative_media(
+    state: str,
+    *,
+    years: Sequence[int] | None,
+    status_column: str,
+    timestamp_column: str,
+    error_column: str,
+    ready_statuses: Sequence[str],
+    claimed_status: str,
+    stale_after_seconds: int,
+    retry_statuses: Sequence[str] = (),
+    retry_after_seconds: int | None = None,
+    required_status_column: str | None = None,
+    required_statuses: Sequence[str] | None = None,
+) -> dict[str, Any] | None:
+    allowed_columns = {
+        "transcript_status",
+        "transcript_updated_at",
+        "transcript_error",
+        "explanation_scan_status",
+        "explanation_scanned_at",
+        "explanation_scan_error",
+    }
+    selected_columns = {status_column, timestamp_column, error_column}
+    if required_status_column:
+        selected_columns.add(required_status_column)
+    if not selected_columns.issubset(allowed_columns):
+        raise ValueError("Unsupported legislative media claim column")
+
+    now = iso_now()
+    stale_before = (
+        datetime.now(timezone.utc) - timedelta(seconds=max(1, int(stale_after_seconds)))
+    ).isoformat(timespec="seconds")
+    status_placeholders = ", ".join("?" for _ in ready_statuses)
+    claimable_parts = [f"{status_column} IN ({status_placeholders})"]
+    claimable_params = [str(status) for status in ready_statuses]
+    if retry_statuses:
+        if retry_after_seconds is None:
+            raise ValueError("retry_after_seconds is required when retry_statuses are configured")
+        retry_before = (
+            datetime.now(timezone.utc) - timedelta(seconds=max(1, int(retry_after_seconds)))
+        ).isoformat(timespec="seconds")
+        retry_placeholders = ", ".join("?" for _ in retry_statuses)
+        claimable_parts.append(
+            f"({status_column} IN ({retry_placeholders}) "
+            f"AND ({timestamp_column} IS NULL OR {timestamp_column} <= ?))"
+        )
+        claimable_params.extend(str(status) for status in retry_statuses)
+        claimable_params.append(retry_before)
+    claimable_parts.append(
+        f"({status_column} = ? AND ({timestamp_column} IS NULL OR {timestamp_column} <= ?))"
+    )
+    claimable_params.extend((claimed_status, stale_before))
+    claimable_sql = f"({' OR '.join(claimable_parts)})"
+    clauses = ["state = ?"]
+    params: list[Any] = [str(state)]
+    if years:
+        clauses.append(f"year IN ({', '.join('?' for _ in years)})")
+        params.extend(int(year) for year in years)
+    if required_status_column and required_statuses:
+        clauses.append(f"{required_status_column} IN ({', '.join('?' for _ in required_statuses)})")
+        params.extend(str(status) for status in required_statuses)
+    clauses.append(claimable_sql)
+    params.extend(claimable_params)
+
+    with connect() as connection:
+        candidates = connection.execute(
+            f"""
+            SELECT id FROM legislative_media
+            WHERE {' AND '.join(clauses)}
+            ORDER BY year DESC, session_date DESC, chamber ASC, time_of_day ASC, id ASC
+            LIMIT 100
+            """,
+            params,
+        ).fetchall()
+        for candidate in candidates:
+            media_id = int(candidate["id"])
+            update_clauses = [claimable_sql]
+            update_params: list[Any] = [claimed_status, now, now, media_id]
+            update_params.extend(claimable_params)
+            if required_status_column and required_statuses:
+                update_clauses.append(
+                    f"{required_status_column} IN ({', '.join('?' for _ in required_statuses)})"
+                )
+                update_params.extend(str(status) for status in required_statuses)
+            cursor = connection.execute(
+                f"""
+                UPDATE legislative_media
+                SET {status_column} = ?, {error_column} = NULL, {timestamp_column} = ?, updated_at = ?
+                WHERE id = ? AND {' AND '.join(update_clauses)}
+                """,
+                update_params,
+            )
+            if cursor.rowcount != 1:
+                continue
+            row = connection.execute("SELECT * FROM legislative_media WHERE id = ?", (media_id,)).fetchone()
+            connection.commit()
+            return _parse_legislative_media_row(row)
+        connection.commit()
+    return None
+
+
+def claim_legislative_media_transcription(
+    state: str,
+    *,
+    years: Sequence[int] | None = None,
+    stale_after_seconds: int = 3 * 60 * 60,
+    retry_after_seconds: int = 6 * 60 * 60,
+) -> dict[str, Any] | None:
+    return _claim_legislative_media(
+        state,
+        years=years,
+        status_column="transcript_status",
+        timestamp_column="transcript_updated_at",
+        error_column="transcript_error",
+        ready_statuses=("pending", "needs_transcription"),
+        claimed_status="transcribing",
+        stale_after_seconds=stale_after_seconds,
+        retry_statuses=("failed",),
+        retry_after_seconds=retry_after_seconds,
+    )
+
+
+def claim_legislative_media_explanation_scan(
+    state: str,
+    *,
+    years: Sequence[int] | None = None,
+    stale_after_seconds: int = 6 * 60 * 60,
+    retry_after_seconds: int = 6 * 60 * 60,
+) -> dict[str, Any] | None:
+    return _claim_legislative_media(
+        state,
+        years=years,
+        status_column="explanation_scan_status",
+        timestamp_column="explanation_scanned_at",
+        error_column="explanation_scan_error",
+        ready_statuses=("pending",),
+        claimed_status="scanning",
+        stale_after_seconds=stale_after_seconds,
+        retry_statuses=("failed",),
+        retry_after_seconds=retry_after_seconds,
+        required_status_column="transcript_status",
+        required_statuses=("available",),
+    )
+
+
 def update_legislative_media_transcript(
     media_id: int,
     *,

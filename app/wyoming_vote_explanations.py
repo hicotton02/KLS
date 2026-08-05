@@ -18,6 +18,8 @@ from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
 from app.db import (
+    claim_legislative_media_explanation_scan,
+    claim_legislative_media_transcription,
     count_bill_vote_explanations,
     get_legislative_media,
     init_db,
@@ -722,7 +724,18 @@ def fetch_media_transcript(
     try:
         captions: TranscriptResult | None = None
         if media.get("source_kind") == "youtube":
-            captions = _youtube_captions(str(media["source_url"]), settings)
+            try:
+                captions = _youtube_captions(str(media["source_url"]), settings)
+            except httpx.HTTPError as exc:
+                if logger:
+                    logger(
+                        f"Published captions were unavailable for media {media['id']} ({exc}); "
+                        "falling back to transcription."
+                    )
+                captions = TranscriptResult(
+                    status="needs_transcription",
+                    error=f"Published captions were temporarily unavailable: {exc}",
+                )
             if captions.status == "available":
                 return captions
         if settings.transcription_api_url:
@@ -765,23 +778,33 @@ def transcribe_wyoming_media(
             media_items.append(media)
         if limit is not None:
             media_items = media_items[: max(0, limit)]
-    else:
-        statuses = None if force else ["pending", "needs_transcription"]
+    elif force:
         media_items = list_legislative_media(
             "wy",
             years=selected_years,
-            transcript_statuses=statuses,
+            transcript_statuses=None,
             limit=limit,
         )
+    else:
+        media_items = []
+
+    def selected_media() -> Iterable[dict[str, Any]]:
+        if selected_media_ids or force:
+            yield from media_items
+            return
+        claimed = 0
+        max_items = None if limit is None else max(0, int(limit))
+        while max_items is None or claimed < max_items:
+            media = claim_legislative_media_transcription("wy", years=selected_years)
+            if media is None:
+                break
+            claimed += 1
+            yield media
+
     added = waiting = failed = 0
-    for media in media_items:
-        if (
-            media.get("transcript_status") == "needs_transcription"
-            and not config.transcription_api_url
-            and not config.local_transcription_model
-        ):
-            waiting += 1
-            continue
+    for media in selected_media():
+        if logger and not selected_media_ids and not force:
+            logger(f"Claimed media {media['id']} for transcription.")
         result = fetch_media_transcript(media, config, logger=logger)
         update_legislative_media_transcript(
             int(media["id"]),
@@ -902,7 +925,21 @@ def find_bill_sections(
         if next_other is not None:
             section_end = min(section_end, max(start + 120, next_other - 10))
         sections.append({"bill_num": bill_num, "start": section_start, "end": section_end})
-    return sections
+
+    merged_by_bill: dict[str, list[dict[str, Any]]] = {}
+    for section in sections:
+        bill_sections = merged_by_bill.setdefault(str(section["bill_num"]), [])
+        if bill_sections:
+            previous = bill_sections[-1]
+            merged_end = max(int(previous["end"]), int(section["end"]))
+            if int(section["start"]) <= int(previous["end"]) and merged_end - int(previous["start"]) <= max_seconds:
+                previous["end"] = merged_end
+                continue
+        bill_sections.append(dict(section))
+    return sorted(
+        (section for bill_sections in merged_by_bill.values() for section in bill_sections),
+        key=lambda section: (int(section["start"]), str(section["bill_num"])),
+    )
 
 
 def _transcript_text(segments: list[dict[str, Any]], start: int, end: int) -> str:
@@ -1170,18 +1207,37 @@ def scan_wyoming_media(
 ) -> tuple[int, int]:
     selected_years = sorted({int(year) for year in years}, reverse=True)
     config = settings or get_settings()
-    scan_statuses = None if force else ["pending"]
-    media_items = list_legislative_media(
-        "wy",
-        years=selected_years,
-        transcript_statuses=["available"],
-        explanation_scan_statuses=scan_statuses,
-        limit=limit,
+    media_items = (
+        list_legislative_media(
+            "wy",
+            years=selected_years,
+            transcript_statuses=["available"],
+            explanation_scan_statuses=None,
+            limit=limit,
+        )
+        if force
+        else []
     )
+
+    def selected_media() -> Iterable[dict[str, Any]]:
+        if force:
+            yield from media_items
+            return
+        claimed = 0
+        max_items = None if limit is None else max(0, int(limit))
+        while max_items is None or claimed < max_items:
+            media = claim_legislative_media_explanation_scan("wy", years=selected_years)
+            if media is None:
+                break
+            claimed += 1
+            yield media
+
     scanned = explanations = 0
     ollama = OllamaClient(config)
     try:
-        for media in media_items:
+        for media in selected_media():
+            if logger and not force:
+                logger(f"Claimed media {media['id']} for explanation scanning.")
             try:
                 rows = extract_media_vote_explanations(media, ollama=ollama)
                 replace_media_vote_explanations(int(media["id"]), rows)

@@ -17,7 +17,11 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/name: keeping-law-simple
-              app.kubernetes.io/component: wyoming-explanations
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values:
+                  - wyoming-transcriptions
       ports:
         - protocol: TCP
           port: 8000

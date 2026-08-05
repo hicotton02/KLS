@@ -1,8 +1,13 @@
+from types import SimpleNamespace
+
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app import wyoming_vote_explanations as explanations
 from app.db import (
+    claim_legislative_media_explanation_scan,
+    claim_legislative_media_transcription,
     connect,
     get_bill_vote_explanation_scan,
     get_legislative_media,
@@ -122,6 +127,20 @@ def test_find_bill_sections_matches_spoken_bill_numbers() -> None:
     )
 
 
+def test_find_bill_sections_merges_overlapping_windows_for_the_same_bill() -> None:
+    segments = [
+        {"start": 100, "end": 105, "text": "Senate File 101 is before us."},
+        {"start": 150, "end": 155, "text": "House Bill 2 was also mentioned."},
+        {"start": 200, "end": 205, "text": "Returning to Senate File 101."},
+        {"start": 250, "end": 255, "text": "House Bill 2 is next."},
+    ]
+
+    sections = find_bill_sections(segments, ["SF0101", "HB0002"])
+    senate_sections = [section for section in sections if section["bill_num"] == "SF0101"]
+
+    assert senate_sections == [{"bill_num": "SF0101", "start": 55, "end": 320}]
+
+
 def test_transcription_quality_filter_and_models_endpoint() -> None:
     assert _transcription_models_url("http://stt.example/v1/audio/transcriptions") == (
         "http://stt.example/v1/models"
@@ -210,6 +229,220 @@ def test_transcribe_exact_media_id_does_not_process_other_pending_media(monkeypa
             media_ids=[target_id],
             force=True,
         )
+
+
+def test_caption_rate_limit_falls_back_to_transcription(monkeypatch) -> None:
+    request = httpx.Request("GET", "https://www.youtube.com/api/timedtext")
+    response = httpx.Response(429, request=request)
+    expected = TranscriptResult(
+        status="available",
+        source="speech_to_text",
+        segments=[{"start": 0, "end": 2, "text": "Test speech."}],
+    )
+    logs: list[str] = []
+
+    def rate_limited_captions(_source_url, _settings):
+        raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    monkeypatch.setattr(explanations, "_youtube_captions", rate_limited_captions)
+    monkeypatch.setattr(
+        explanations,
+        "_transcribe_with_api",
+        lambda media, settings, *, logger=None: expected,
+    )
+
+    result = explanations.fetch_media_transcript(
+        {"id": 123, "source_kind": "youtube", "source_url": "https://youtu.be/test"},
+        SimpleNamespace(transcription_api_url="http://stt.example", local_transcription_model=""),
+        logger=logs.append,
+    )
+
+    assert result == expected
+    assert "falling back to transcription" in logs[0]
+
+
+def test_transcription_claims_are_distinct_and_stale_claims_recover() -> None:
+    first_id = upsert_legislative_media(
+        {
+            "state": "wy",
+            "year": 2098,
+            "session_date": "2098-03-06",
+            "chamber": "H",
+            "source_url": "https://www.youtube.com/watch?v=claim-first",
+            "source_kind": "youtube",
+        }
+    )
+    second_id = upsert_legislative_media(
+        {
+            "state": "wy",
+            "year": 2098,
+            "session_date": "2098-03-05",
+            "chamber": "S",
+            "source_url": "https://www.youtube.com/watch?v=claim-second",
+            "source_kind": "youtube",
+        }
+    )
+
+    first_claim = claim_legislative_media_transcription("wy", years=[2098])
+    second_claim = claim_legislative_media_transcription("wy", years=[2098])
+
+    assert first_claim is not None and int(first_claim["id"]) == first_id
+    assert second_claim is not None and int(second_claim["id"]) == second_id
+    assert first_claim["transcript_status"] == "transcribing"
+    assert second_claim["transcript_status"] == "transcribing"
+    assert claim_legislative_media_transcription("wy", years=[2098]) is None
+
+    with connect() as connection:
+        connection.execute(
+            "UPDATE legislative_media SET transcript_updated_at = ? WHERE id = ?",
+            ("2000-01-01T00:00:00+00:00", first_id),
+        )
+        connection.commit()
+
+    recovered = claim_legislative_media_transcription("wy", years=[2098], stale_after_seconds=1)
+    assert recovered is not None and int(recovered["id"]) == first_id
+
+
+def test_explanation_claims_are_distinct_and_stale_claims_recover() -> None:
+    media_ids = []
+    for day, chamber in ((6, "H"), (5, "S")):
+        media_id = upsert_legislative_media(
+            {
+                "state": "wy",
+                "year": 2098,
+                "session_date": f"2098-03-{day:02d}",
+                "chamber": chamber,
+                "source_url": f"https://www.youtube.com/watch?v=scan-claim-{day}",
+                "source_kind": "youtube",
+            }
+        )
+        update_legislative_media_transcript(
+            media_id,
+            status="available",
+            transcript_source="youtube_captions",
+            segments=[{"start": 0, "end": 2, "text": "Test speech."}],
+        )
+        media_ids.append(media_id)
+
+    first_claim = claim_legislative_media_explanation_scan("wy", years=[2098])
+    second_claim = claim_legislative_media_explanation_scan("wy", years=[2098])
+
+    assert first_claim is not None and int(first_claim["id"]) == media_ids[0]
+    assert second_claim is not None and int(second_claim["id"]) == media_ids[1]
+    assert first_claim["explanation_scan_status"] == "scanning"
+    assert second_claim["explanation_scan_status"] == "scanning"
+    assert claim_legislative_media_explanation_scan("wy", years=[2098]) is None
+
+    with connect() as connection:
+        connection.execute(
+            "UPDATE legislative_media SET explanation_scanned_at = ? WHERE id = ?",
+            ("2000-01-01T00:00:00+00:00", media_ids[0]),
+        )
+        connection.commit()
+
+    recovered = claim_legislative_media_explanation_scan("wy", years=[2098], stale_after_seconds=1)
+    assert recovered is not None and int(recovered["id"]) == media_ids[0]
+
+
+def test_failed_media_waits_for_retry_cooldown() -> None:
+    transcript_id = upsert_legislative_media(
+        {
+            "state": "wy",
+            "year": 2097,
+            "session_date": "2097-03-06",
+            "chamber": "H",
+            "source_url": "https://www.youtube.com/watch?v=retry-transcript",
+            "source_kind": "youtube",
+        }
+    )
+    update_legislative_media_transcript(transcript_id, status="failed", error="temporary failure")
+
+    assert claim_legislative_media_transcription("wy", years=[2097], retry_after_seconds=3600) is None
+    with connect() as connection:
+        connection.execute(
+            "UPDATE legislative_media SET transcript_updated_at = ? WHERE id = ?",
+            ("2000-01-01T00:00:00+00:00", transcript_id),
+        )
+        connection.commit()
+    transcript_retry = claim_legislative_media_transcription("wy", years=[2097], retry_after_seconds=1)
+    assert transcript_retry is not None and int(transcript_retry["id"]) == transcript_id
+
+    scan_id = upsert_legislative_media(
+        {
+            "state": "wy",
+            "year": 2096,
+            "session_date": "2096-03-06",
+            "chamber": "S",
+            "source_url": "https://www.youtube.com/watch?v=retry-scan",
+            "source_kind": "youtube",
+        }
+    )
+    update_legislative_media_transcript(
+        scan_id,
+        status="available",
+        transcript_source="youtube_captions",
+        segments=[{"start": 0, "end": 2, "text": "Test speech."}],
+    )
+    with connect() as connection:
+        connection.execute(
+            """
+            UPDATE legislative_media
+            SET explanation_scan_status = 'failed',
+                explanation_scan_error = 'temporary failure',
+                explanation_scanned_at = '2099-01-01T00:00:00+00:00'
+            WHERE id = ?
+            """,
+            (scan_id,),
+        )
+        connection.commit()
+
+    assert claim_legislative_media_explanation_scan("wy", years=[2096], retry_after_seconds=3600) is None
+    with connect() as connection:
+        connection.execute(
+            "UPDATE legislative_media SET explanation_scanned_at = ? WHERE id = ?",
+            ("2000-01-01T00:00:00+00:00", scan_id),
+        )
+        connection.commit()
+    scan_retry = claim_legislative_media_explanation_scan("wy", years=[2096], retry_after_seconds=1)
+    assert scan_retry is not None and int(scan_retry["id"]) == scan_id
+
+
+def test_queue_workers_mark_claims_before_processing(monkeypatch) -> None:
+    transcript_id = upsert_legislative_media(
+        {
+            "state": "wy",
+            "year": 2098,
+            "session_date": "2098-03-06",
+            "chamber": "H",
+            "source_url": "https://www.youtube.com/watch?v=queue-transcript",
+            "source_kind": "youtube",
+        }
+    )
+    observed_transcript_statuses: list[str] = []
+
+    def fake_fetch(media, _settings, *, logger=None):
+        observed_transcript_statuses.append(str(get_legislative_media(int(media["id"]))["transcript_status"]))
+        return TranscriptResult(
+            status="available",
+            source="speech_to_text",
+            segments=[{"start": 0, "end": 2, "text": "Test speech."}],
+        )
+
+    monkeypatch.setattr(explanations, "fetch_media_transcript", fake_fetch)
+    assert transcribe_wyoming_media([2098], settings=get_settings(), limit=1) == (1, 0, 0)
+    assert observed_transcript_statuses == ["transcribing"]
+    assert get_legislative_media(transcript_id)["transcript_status"] == "available"
+
+    observed_scan_statuses: list[str] = []
+
+    def fake_extract(media, *, ollama):
+        observed_scan_statuses.append(str(get_legislative_media(int(media["id"]))["explanation_scan_status"]))
+        return []
+
+    monkeypatch.setattr(explanations, "extract_media_vote_explanations", fake_extract)
+    assert explanations.scan_wyoming_media([2098], settings=get_settings(), limit=1) == (1, 0)
+    assert observed_scan_statuses == ["scanning"]
+    assert get_legislative_media(transcript_id)["explanation_scan_status"] == "complete"
 
 
 def test_curated_example_uses_final_bill_vote_after_statement_date() -> None:

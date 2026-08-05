@@ -1,25 +1,28 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: keeping-law-simple-wyoming-explanations
+  name: keeping-law-simple-wyoming-reasoning
   namespace: keeping-law-simple
 spec:
-  schedule: "*/15 * * * *"
+  suspend: false
+  schedule: "*/5 * * * *"
   timeZone: America/Denver
   concurrencyPolicy: Forbid
-  startingDeadlineSeconds: 600
+  startingDeadlineSeconds: 300
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 1
   jobTemplate:
     spec:
-      activeDeadlineSeconds: 43200
-      backoffLimit: 1
+      activeDeadlineSeconds: 21600
+      backoffLimit: 2
+      completions: 2
+      parallelism: 2
       ttlSecondsAfterFinished: 3600
       template:
         metadata:
           labels:
             app.kubernetes.io/name: keeping-law-simple
-            app.kubernetes.io/component: wyoming-explanations
+            app.kubernetes.io/component: wyoming-reasoning
         spec:
           automountServiceAccountToken: false
           restartPolicy: Never
@@ -32,7 +35,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: worker
-              image: registry.skazproconsulting.com/keeping-law-simple/web:20260804-wy-stt-canary2@sha256:2c5f41d9c9762155e6b6a026c107e55f8e09be8cddf5781fce93275819c54df1
+              image: registry.skazproconsulting.com/keeping-law-simple/web:20260804-wy-pipeline5@sha256:e598ad16b6d6a651ab139a019ac9092a2221b61eef34968acda393007d656894
               imagePullPolicy: IfNotPresent
               command:
                 - python
@@ -40,9 +43,9 @@ spec:
                 - app.cli
                 - backfill-wyoming-explanations
                 - --stage
-                - worker
+                - extract
                 - --limit-media
-                - "4"
+                - "2"
               env:
                 - name: PGPASSWORD
                   valueFrom:
@@ -51,10 +54,10 @@ spec:
                       key: KLS_POSTGRES_PASSWORD
                 - name: KLS_DATABASE_URL
                   value: postgresql://kls@keeping-law-simple-postgres.keeping-law-simple.svc.cluster.local:5432/kls
-                - name: KLS_TRANSCRIPTION_API_URL
-                  value: http://automation-stt-gpu1-router.automation.svc.cluster.local/v1/audio/transcriptions
-                - name: KLS_TRANSCRIPTION_TIMEOUT_SECONDS
-                  value: "3600"
+                - name: KLS_OLLAMA_BASE_URL
+                  value: http://ai-inference-ollama.ai-platform.svc.cluster.local:11435
+                - name: KLS_OLLAMA_TIMEOUT_SECONDS
+                  value: "1800"
               envFrom:
                 - configMapRef:
                     name: keeping-law-simple-config
@@ -62,23 +65,16 @@ spec:
                     name: keeping-law-simple-secrets
               resources:
                 requests:
+                  cpu: 500m
+                  memory: 1Gi
+                limits:
                   cpu: "2"
                   memory: 4Gi
-                limits:
-                  cpu: "4"
-                  memory: 8Gi
-              volumeMounts:
-                - name: tmp
-                  mountPath: /tmp
               securityContext:
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true
                 capabilities:
                   drop:
                     - ALL
-          volumes:
-            - name: tmp
-              emptyDir:
-                sizeLimit: 20Gi
           nodeSelector:
             kubernetes.io/hostname: gpu1

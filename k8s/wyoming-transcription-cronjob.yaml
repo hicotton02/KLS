@@ -1,0 +1,87 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: keeping-law-simple-wyoming-transcriptions
+  namespace: keeping-law-simple
+spec:
+  suspend: false
+  schedule: "*/5 * * * *"
+  timeZone: America/Denver
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 10800
+      backoffLimit: 2
+      completions: 2
+      parallelism: 2
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: keeping-law-simple
+            app.kubernetes.io/component: wyoming-transcriptions
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: worker
+              image: registry.skazproconsulting.com/keeping-law-simple/web:20260804-wy-pipeline5@sha256:e598ad16b6d6a651ab139a019ac9092a2221b61eef34968acda393007d656894
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - -m
+                - app.cli
+                - backfill-wyoming-explanations
+                - --stage
+                - transcribe
+                - --limit-media
+                - "4"
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: keeping-law-simple-postgres-secrets
+                      key: KLS_POSTGRES_PASSWORD
+                - name: KLS_DATABASE_URL
+                  value: postgresql://kls@keeping-law-simple-postgres.keeping-law-simple.svc.cluster.local:5432/kls
+                - name: KLS_TRANSCRIPTION_API_URL
+                  value: http://automation-stt-gpu1-router.automation.svc.cluster.local/v1/audio/transcriptions
+                - name: KLS_TRANSCRIPTION_TIMEOUT_SECONDS
+                  value: "3600"
+              envFrom:
+                - configMapRef:
+                    name: keeping-law-simple-config
+                - secretRef:
+                    name: keeping-law-simple-secrets
+              resources:
+                requests:
+                  cpu: "2"
+                  memory: 4Gi
+                limits:
+                  cpu: "4"
+                  memory: 8Gi
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 20Gi
+          nodeSelector:
+            kubernetes.io/hostname: gpu1

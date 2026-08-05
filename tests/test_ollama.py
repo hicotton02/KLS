@@ -49,3 +49,21 @@ def test_json_prompt_disables_model_thinking() -> None:
     assert result == {"ok": True}
     assert transport.payload is not None
     assert transport.payload["think"] is False
+
+
+def test_vote_explanation_prompt_has_room_for_complete_json() -> None:
+    transport = _FakeClient()
+    client = object.__new__(OllamaClient)
+    client.settings = SimpleNamespace(ollama_model="test-model")
+    client.clients = [transport]
+    client._client_index = 0
+
+    assert client.extract_vote_explanations(
+        bill_num="SF0101",
+        bill_title="Test bill",
+        lawmakers=["Pat Example"],
+        transcript="[100] I will vote no because the wording is unclear.",
+    ) == []
+
+    assert transport.payload is not None
+    assert transport.payload["options"]["num_predict"] == 2200
