@@ -59,7 +59,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: sync
-              image: registry.skazproconsulting.com/keeping-law-simple/web:20260804-source32-1
+              image: registry.skazproconsulting.com/keeping-law-simple/web:20260804-source32-1@sha256:112f38174630606d2dfff5dbda340746b474b8103eab2c1f062f90933b39bad5
               imagePullPolicy: IfNotPresent
               command:
                 - sh
@@ -133,11 +133,11 @@ spec:
                     - ALL
               resources:
                 requests:
-                  cpu: "1"
-                  memory: 2Gi
+                  cpu: 250m
+                  memory: 512Mi
                 limits:
-                  cpu: "6"
-                  memory: 12Gi
+                  cpu: "4"
+                  memory: 4Gi
           volumes:
             - name: data
               emptyDir: {}
