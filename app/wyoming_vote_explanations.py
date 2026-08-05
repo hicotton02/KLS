@@ -5,6 +5,7 @@ import os
 import re
 import tempfile
 import time
+import wave
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
@@ -18,6 +19,7 @@ from yt_dlp.utils import DownloadError
 
 from app.db import (
     count_bill_vote_explanations,
+    get_legislative_media,
     init_db,
     list_bill_roll_calls,
     list_bill_roll_call_targets,
@@ -38,6 +40,15 @@ from app.wyoming_api import WyomingApiClient
 
 Logger = Callable[[str], None]
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+TRANSCRIPTION_SAMPLE_RATE = 16_000
+TRANSCRIPTION_CHUNK_SECONDS = 120
+TRANSCRIPTION_RETRY_SECONDS = 60
+MAX_TRANSCRIPTION_COMPRESSION_RATIO = 4.0
+MAX_TRANSCRIPTION_WORDS_PER_MINUTE = 240
+MAX_SHORT_TRANSCRIPTION_WORDS_PER_MINUTE = 260
+MAX_REJECTED_TRANSCRIPTION_SEGMENT_RATIO = 0.65
+SPARSE_REJECTED_TRANSCRIPTION_SEGMENT_RATIO = 0.60
+MIN_WORDS_PER_MINUTE_AFTER_HEAVY_REJECTION = 80
 
 
 @dataclass
@@ -60,6 +71,13 @@ class TranscriptResult:
     title: str | None = None
     duration_seconds: int | None = None
     error: str | None = None
+
+
+class TranscriptionChunkQualityError(RuntimeError):
+    def __init__(self, message: str, *, elapsed: float, diagnostics: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.elapsed = elapsed
+        self.diagnostics = diagnostics
 
 
 def _youtube_id(source_url: str) -> str | None:
@@ -226,20 +244,23 @@ def parse_youtube_json3(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _merge_transcript_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     for segment in segments:
+        normalized = dict(segment)
+        normalized["start"] = max(0, int(segment["start"]))
+        normalized["end"] = max(normalized["start"] + 1, int(segment["end"]))
         if not merged:
-            merged.append(dict(segment))
+            merged.append(normalized)
             continue
         current = merged[-1]
         can_merge = (
-            int(segment["start"]) <= int(current["end"]) + 2
-            and int(segment["start"]) - int(current["start"]) <= 18
-            and len(str(current["text"])) + len(str(segment["text"])) <= 500
+            normalized["start"] <= int(current["end"]) + 2
+            and normalized["start"] - int(current["start"]) <= 18
+            and len(str(current["text"])) + len(str(normalized["text"])) <= 500
         )
         if can_merge:
-            current["text"] = _clean_caption_text(f"{current['text']} {segment['text']}")
-            current["end"] = max(int(current["end"]), int(segment["end"]))
+            current["text"] = _clean_caption_text(f"{current['text']} {normalized['text']}")
+            current["end"] = max(int(current["end"]), normalized["end"])
         else:
-            merged.append(dict(segment))
+            merged.append(normalized)
     return merged
 
 
@@ -287,7 +308,9 @@ def _download_media(media: dict[str, Any], destination: Path) -> Path:
     if media.get("source_kind") == "youtube":
         output_template = str(destination.with_suffix(".%(ext)s"))
         _extract_youtube_info(str(media["source_url"]), download=True, output_template=output_template)
-        candidates = sorted(destination.parent.glob(f"{destination.stem}.*"))
+        candidates = sorted(
+            path for path in destination.parent.glob(f"{destination.stem}.*") if path.suffix != ".part"
+        )
         if not candidates:
             raise RuntimeError("Downloaded YouTube audio could not be located")
         return candidates[0]
@@ -301,50 +324,339 @@ def _download_media(media: dict[str, Any], destination: Path) -> Path:
     return output_path
 
 
-def _transcribe_with_api(media: dict[str, Any], settings: Settings) -> TranscriptResult:
-    with tempfile.TemporaryDirectory(prefix="kls-wy-media-") as temp_dir:
-        media_path = _download_media(media, Path(temp_dir) / f"media-{media['id']}")
-        last_error: Exception | None = None
-        for attempt in range(1, 4):
-            try:
-                with media_path.open("rb") as handle, httpx.Client(
-                    timeout=settings.transcription_timeout_seconds,
-                    follow_redirects=True,
-                ) as client:
-                    response = client.post(
-                        settings.transcription_api_url,
-                        files={"file": (media_path.name, handle, "application/octet-stream")},
-                        data={"language": "en", "response_format": "verbose_json"},
-                    )
-                if response.status_code == 429 and attempt < 3:
-                    time.sleep(30 * attempt)
-                    continue
-                response.raise_for_status()
-                payload = response.json()
-                raw_segments = payload.get("segments") if isinstance(payload, dict) else []
-                segments = [
-                    {
-                        "start": max(0, int(float(item.get("start") or 0))),
-                        "end": max(1, int(float(item.get("end") or 0))),
-                        "text": _clean_caption_text(item.get("text")),
-                    }
-                    for item in (raw_segments or [])
-                    if isinstance(item, dict) and _clean_caption_text(item.get("text"))
-                ]
-                if not segments:
-                    raise RuntimeError("The transcription service returned no timestamped segments")
-                duration = payload.get("duration") if isinstance(payload, dict) else None
-                return TranscriptResult(
-                    status="available",
-                    source="speech_to_text",
-                    segments=_merge_transcript_segments(segments),
-                    duration_seconds=int(float(duration)) if duration else None,
+def _transcription_models_url(api_url: str) -> str:
+    parsed = urlparse(api_url)
+    marker = "/v1/audio/transcriptions"
+    prefix = parsed.path.split(marker, 1)[0] if marker in parsed.path else ""
+    return parsed._replace(path=f"{prefix}/v1/models", query="", fragment="").geturl()
+
+
+def _transcription_service_choice(client: httpx.Client, api_url: str) -> str:
+    response = client.get(_transcription_models_url(api_url))
+    response.raise_for_status()
+    payload = response.json()
+    choices = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict) or not choices[0].get("id"):
+        raise RuntimeError("The transcription service advertised no available engine")
+    return str(choices[0]["id"])
+
+
+def _write_transcription_audio_chunks(
+    audio_path: Path,
+    workdir: Path,
+    *,
+    chunk_seconds: int = TRANSCRIPTION_CHUNK_SECONDS,
+) -> list[dict[str, Any]]:
+    import av
+
+    workdir.mkdir(parents=True, exist_ok=True)
+    chunk_samples = TRANSCRIPTION_SAMPLE_RATE * chunk_seconds
+    chunks: list[dict[str, Any]] = []
+    chunk_index = 0
+    chunk_writer: wave.Wave_write | None = None
+    chunk_path: Path | None = None
+    chunk_written = 0
+    total_written = 0
+
+    def open_chunk() -> tuple[wave.Wave_write, Path]:
+        nonlocal chunk_index
+        chunk_index += 1
+        path = workdir / f"chunk-{chunk_index:03d}.wav"
+        writer = wave.open(str(path), "wb")
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(TRANSCRIPTION_SAMPLE_RATE)
+        return writer, path
+
+    def close_chunk() -> None:
+        nonlocal chunk_writer, chunk_path, chunk_written
+        if chunk_writer is None or chunk_path is None:
+            return
+        chunk_writer.close()
+        if chunk_written:
+            offset = (total_written - chunk_written) / TRANSCRIPTION_SAMPLE_RATE
+            chunks.append(
+                {
+                    "path": chunk_path,
+                    "offset_seconds": offset,
+                    "duration_seconds": chunk_written / TRANSCRIPTION_SAMPLE_RATE,
+                }
+            )
+        chunk_writer = None
+        chunk_path = None
+        chunk_written = 0
+
+    def write_pcm(payload: bytes) -> None:
+        nonlocal chunk_writer, chunk_path, chunk_written, total_written
+        remaining = payload
+        while remaining:
+            if chunk_writer is None:
+                chunk_writer, chunk_path = open_chunk()
+            available_samples = chunk_samples - chunk_written
+            take_bytes = min(len(remaining), available_samples * 2)
+            take_bytes -= take_bytes % 2
+            if take_bytes <= 0:
+                close_chunk()
+                continue
+            chunk_writer.writeframesraw(remaining[:take_bytes])
+            written_samples = take_bytes // 2
+            chunk_written += written_samples
+            total_written += written_samples
+            remaining = remaining[take_bytes:]
+            if chunk_written >= chunk_samples:
+                close_chunk()
+
+    container = av.open(str(audio_path))
+    try:
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=TRANSCRIPTION_SAMPLE_RATE)
+        for source_frame in container.decode(audio=0):
+            for frame in resampler.resample(source_frame):
+                write_pcm(bytes(frame.planes[0])[: frame.samples * 2])
+        for frame in resampler.resample(None):
+            write_pcm(bytes(frame.planes[0])[: frame.samples * 2])
+    finally:
+        container.close()
+        close_chunk()
+    if not chunks:
+        raise RuntimeError("Downloaded media contained no decodable audio")
+    return chunks
+
+
+def _split_transcription_wav_chunk(
+    chunk: dict[str, Any],
+    workdir: Path,
+    *,
+    seconds: int = TRANSCRIPTION_RETRY_SECONDS,
+) -> list[dict[str, Any]]:
+    source_path = Path(chunk["path"])
+    results: list[dict[str, Any]] = []
+    with wave.open(str(source_path), "rb") as source:
+        frames_per_chunk = source.getframerate() * seconds
+        index = 0
+        consumed = 0
+        while payload := source.readframes(frames_per_chunk):
+            index += 1
+            output_path = workdir / f"{source_path.stem}-retry-{index:02d}.wav"
+            with wave.open(str(output_path), "wb") as output:
+                output.setnchannels(source.getnchannels())
+                output.setsampwidth(source.getsampwidth())
+                output.setframerate(source.getframerate())
+                output.writeframes(payload)
+            frame_count = len(payload) // max(1, source.getnchannels() * source.getsampwidth())
+            results.append(
+                {
+                    "path": output_path,
+                    "offset_seconds": float(chunk["offset_seconds"]) + consumed / source.getframerate(),
+                    "duration_seconds": frame_count / source.getframerate(),
+                }
+            )
+            consumed += frame_count
+    return results
+
+
+def _normalized_transcription_segment(value: object) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
+
+
+def _transcription_chunk_quality_issue(
+    *,
+    duration_seconds: float,
+    density: float,
+    rejected_ratio: float,
+    raw_segment_count: int,
+) -> str | None:
+    density_limit = (
+        MAX_SHORT_TRANSCRIPTION_WORDS_PER_MINUTE
+        if duration_seconds <= TRANSCRIPTION_RETRY_SECONDS
+        else MAX_TRANSCRIPTION_WORDS_PER_MINUTE
+    )
+    if density > density_limit:
+        return f"chunk speech density was {density:.1f} words per minute"
+    too_many_rejected = raw_segment_count > 0 and (
+        rejected_ratio > MAX_REJECTED_TRANSCRIPTION_SEGMENT_RATIO
+        or (
+            rejected_ratio > SPARSE_REJECTED_TRANSCRIPTION_SEGMENT_RATIO
+            and density < MIN_WORDS_PER_MINUTE_AFTER_HEAVY_REJECTION
+        )
+    )
+    if too_many_rejected:
+        return f"chunk rejected {rejected_ratio:.0%} of transcript segments at {density:.1f} words per minute"
+    return None
+
+
+def _transcription_retry_delay(response: httpx.Response, attempt: int) -> float:
+    if response.status_code == 429:
+        try:
+            return min(120.0, max(1.0, float(response.headers.get("Retry-After") or 30 * attempt)))
+        except ValueError:
+            return float(30 * attempt)
+    return float(5 * attempt)
+
+
+def _transcribe_api_chunk(
+    client: httpx.Client,
+    api_url: str,
+    service_choice: str,
+    chunk: dict[str, Any],
+    *,
+    logger: Logger | None = None,
+) -> tuple[list[dict[str, Any]], float, dict[str, Any]]:
+    started = time.monotonic()
+    payload: dict[str, Any] | None = None
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            audio_path = Path(chunk["path"])
+            with audio_path.open("rb") as handle:
+                response = client.post(
+                    api_url,
+                    files={"file": (audio_path.name, handle, "application/octet-stream")},
+                    data={
+                        "model": service_choice,
+                        "language": "en",
+                        "response_format": "verbose_json",
+                        "vad_filter": "true",
+                    },
                 )
-            except (httpx.HTTPError, OSError, RuntimeError, ValueError) as exc:
-                last_error = exc
-                if attempt < 3:
-                    time.sleep(5 * attempt)
-        return TranscriptResult(status="failed", error=str(last_error or "Transcription failed")[:1000])
+            if response.status_code in {429, 502, 503, 504} and attempt < 3:
+                delay = _transcription_retry_delay(response, attempt)
+                if logger:
+                    logger(
+                        f"Transcription service returned {response.status_code} for chunk at "
+                        f"{int(float(chunk['offset_seconds']))} seconds; retrying in {delay:.0f} seconds."
+                    )
+                time.sleep(delay)
+                continue
+            response.raise_for_status()
+            parsed = response.json()
+            if not isinstance(parsed, dict):
+                raise RuntimeError("The transcription service returned an invalid response")
+            payload = parsed
+            break
+        except (httpx.HTTPError, OSError, RuntimeError, ValueError) as exc:
+            last_error = exc
+            if attempt < 3:
+                time.sleep(5 * attempt)
+    if payload is None:
+        raise RuntimeError(str(last_error or "Transcription request failed"))
+
+    elapsed = time.monotonic() - started
+    raw_segments = [item for item in (payload.get("segments") or []) if isinstance(item, dict)]
+    segments: list[dict[str, Any]] = []
+    rejected = 0
+    recent_text: dict[str, float] = {}
+    offset = float(chunk["offset_seconds"])
+    for item in raw_segments:
+        text = _clean_caption_text(item.get("text"))
+        if not text:
+            continue
+        compression_ratio = float(item.get("compression_ratio") or 0)
+        no_speech_probability = float(item.get("no_speech_prob") or 0)
+        average_log_probability = float(item.get("avg_logprob") or 0)
+        start = max(0.0, float(item.get("start") or 0))
+        normalized = _normalized_transcription_segment(text)
+        previous_start = recent_text.get(normalized)
+        repeated = len(normalized.split()) >= 10 and previous_start is not None and start - previous_start <= 120
+        if (
+            compression_ratio > MAX_TRANSCRIPTION_COMPRESSION_RATIO
+            or (no_speech_probability > 0.6 and average_log_probability < -1.0)
+            or repeated
+        ):
+            rejected += 1
+            continue
+        recent_text[normalized] = start
+        segments.append(
+            {
+                "start": max(0, int(offset + start)),
+                "end": max(1, int(offset + float(item.get("end") or start + 1))),
+                "text": text,
+            }
+        )
+
+    duration_minutes = max(1 / 60, float(chunk["duration_seconds"]) / 60)
+    word_count = len(re.findall(r"[a-z0-9]+", " ".join(item["text"] for item in segments).casefold()))
+    density = word_count / duration_minutes
+    rejected_ratio = rejected / max(1, len(raw_segments))
+    diagnostics = {
+        "duration_seconds": round(float(chunk["duration_seconds"]), 1),
+        "raw_segments": len(raw_segments),
+        "accepted_segments": len(segments),
+        "rejected_segments": rejected,
+        "rejected_ratio": round(rejected_ratio, 3),
+        "words_per_minute": round(density, 1),
+    }
+    quality_issue = _transcription_chunk_quality_issue(
+        duration_seconds=float(chunk["duration_seconds"]),
+        density=density,
+        rejected_ratio=rejected_ratio,
+        raw_segment_count=len(raw_segments),
+    )
+    if quality_issue:
+        raise TranscriptionChunkQualityError(quality_issue, elapsed=elapsed, diagnostics=diagnostics)
+    return segments, elapsed, diagnostics
+
+
+def _transcribe_with_api(
+    media: dict[str, Any],
+    settings: Settings,
+    *,
+    logger: Logger | None = None,
+) -> TranscriptResult:
+    with tempfile.TemporaryDirectory(prefix="kls-wy-media-") as temp_dir:
+        workdir = Path(temp_dir)
+        media_path = _download_media(media, workdir / f"media-{media['id']}")
+        chunks = _write_transcription_audio_chunks(media_path, workdir / "chunks")
+        segments: list[dict[str, Any]] = []
+        processing_seconds = 0.0
+        with httpx.Client(
+            timeout=settings.transcription_timeout_seconds,
+            follow_redirects=True,
+        ) as client:
+            service_choice = _transcription_service_choice(client, settings.transcription_api_url)
+            for index, chunk in enumerate(chunks, start=1):
+                try:
+                    chunk_segments, elapsed, _diagnostics = _transcribe_api_chunk(
+                        client,
+                        settings.transcription_api_url,
+                        service_choice,
+                        chunk,
+                        logger=logger,
+                    )
+                    processing_seconds += elapsed
+                    segments.extend(chunk_segments)
+                    continue
+                except TranscriptionChunkQualityError as exc:
+                    processing_seconds += exc.elapsed
+                    if logger:
+                        logger(f"Chunk {index} failed quality ({exc}); retrying as one-minute pieces.")
+
+                retry_chunks = _split_transcription_wav_chunk(chunk, workdir / "chunks")
+                for retry_chunk in retry_chunks:
+                    retry_segments, elapsed, _diagnostics = _transcribe_api_chunk(
+                        client,
+                        settings.transcription_api_url,
+                        service_choice,
+                        retry_chunk,
+                        logger=logger,
+                    )
+                    processing_seconds += elapsed
+                    segments.extend(retry_segments)
+
+        if not segments:
+            return TranscriptResult(status="failed", error="The transcription service returned no timestamped speech")
+        segments.sort(key=lambda item: (int(item["start"]), int(item["end"])))
+        duration_seconds = int(round(sum(float(chunk["duration_seconds"]) for chunk in chunks)))
+        if logger:
+            speed = duration_seconds / max(0.1, processing_seconds)
+            logger(
+                f"Transcribed media {media['id']} in {len(chunks)} chunks at {speed:.2f} times real time."
+            )
+        return TranscriptResult(
+            status="available",
+            source="speech_to_text",
+            segments=_merge_transcript_segments(segments),
+            duration_seconds=duration_seconds,
+        )
 
 
 @lru_cache(maxsize=2)
@@ -401,7 +713,12 @@ def _transcribe_locally(media: dict[str, Any], settings: Settings) -> Transcript
         )
 
 
-def fetch_media_transcript(media: dict[str, Any], settings: Settings) -> TranscriptResult:
+def fetch_media_transcript(
+    media: dict[str, Any],
+    settings: Settings,
+    *,
+    logger: Logger | None = None,
+) -> TranscriptResult:
     try:
         captions: TranscriptResult | None = None
         if media.get("source_kind") == "youtube":
@@ -409,7 +726,7 @@ def fetch_media_transcript(media: dict[str, Any], settings: Settings) -> Transcr
             if captions.status == "available":
                 return captions
         if settings.transcription_api_url:
-            return _transcribe_with_api(media, settings)
+            return _transcribe_with_api(media, settings, logger=logger)
         if settings.local_transcription_model:
             return _transcribe_locally(media, settings)
         return captions or TranscriptResult(
@@ -426,17 +743,36 @@ def transcribe_wyoming_media(
     settings: Settings | None = None,
     limit: int | None = None,
     force: bool = False,
+    media_ids: Iterable[int] | None = None,
     logger: Logger | None = None,
 ) -> tuple[int, int, int]:
     selected_years = sorted({int(year) for year in years}, reverse=True)
     config = settings or get_settings()
-    statuses = None if force else ["pending", "needs_transcription"]
-    media_items = list_legislative_media(
-        "wy",
-        years=selected_years,
-        transcript_statuses=statuses,
-        limit=limit,
-    )
+    selected_year_set = set(selected_years)
+    selected_media_ids = list(dict.fromkeys(int(media_id) for media_id in (media_ids or [])))
+    if selected_media_ids:
+        media_items = []
+        for media_id in selected_media_ids:
+            media = get_legislative_media(media_id)
+            if media is None:
+                raise ValueError(f"Wyoming legislative media {media_id} was not found")
+            if str(media.get("state") or "").casefold() != "wy" or int(media.get("year") or 0) not in selected_year_set:
+                raise ValueError(f"Legislative media {media_id} is not in the selected Wyoming years")
+            if not force and media.get("transcript_status") not in {"pending", "needs_transcription"}:
+                raise ValueError(
+                    f"Legislative media {media_id} has status {media.get('transcript_status')}; use --force to retry it"
+                )
+            media_items.append(media)
+        if limit is not None:
+            media_items = media_items[: max(0, limit)]
+    else:
+        statuses = None if force else ["pending", "needs_transcription"]
+        media_items = list_legislative_media(
+            "wy",
+            years=selected_years,
+            transcript_statuses=statuses,
+            limit=limit,
+        )
     added = waiting = failed = 0
     for media in media_items:
         if (
@@ -446,7 +782,7 @@ def transcribe_wyoming_media(
         ):
             waiting += 1
             continue
-        result = fetch_media_transcript(media, config)
+        result = fetch_media_transcript(media, config, logger=logger)
         update_legislative_media_transcript(
             int(media["id"]),
             status=result.status,
@@ -474,6 +810,43 @@ def _normalized_words(value: object) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
 
 
+def _number_words(value: int) -> str:
+    ones = (
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+    )
+    tens = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+    if value < 20:
+        return ones[value]
+    if value < 100:
+        return " ".join(part for part in (tens[value // 10], ones[value % 10] if value % 10 else "") if part)
+    if value < 1000:
+        return " ".join(
+            part
+            for part in (f"{ones[value // 100]} hundred", _number_words(value % 100) if value % 100 else "")
+            if part
+        )
+    return ""
+
+
 def _bill_alias_patterns(bill_num: str) -> list[re.Pattern[str]]:
     match = re.fullmatch(r"([A-Za-z]+)0*([0-9]+)", str(bill_num).replace(" ", ""))
     if not match:
@@ -490,6 +863,9 @@ def _bill_alias_patterns(bill_num: str) -> list[re.Pattern[str]]:
     aliases = [rf"\b{re.escape(prefix.casefold())}\s*0*{number}\b"]
     if spoken:
         aliases.append(rf"\b{spoken}(?:\s+number)?\s+0*{number}\b")
+        number_words = _number_words(int(number))
+        if number_words:
+            aliases.append(rf"\b{spoken}(?:\s+number)?\s+{re.escape(number_words)}\b")
     return [re.compile(alias, re.IGNORECASE) for alias in aliases]
 
 
@@ -909,6 +1285,7 @@ def backfill_wyoming_vote_explanations(
     stage: str = "all",
     limit_media: int | None = None,
     force: bool = False,
+    media_ids: Iterable[int] | None = None,
     settings: Settings | None = None,
     logger: Logger | None = None,
 ) -> VoteExplanationBackfillStats:
@@ -919,6 +1296,9 @@ def backfill_wyoming_vote_explanations(
     )
     if stage not in {"all", "discover", "transcribe", "extract", "status", "worker"}:
         raise ValueError(f"Unknown vote-explanation stage: {stage}")
+    selected_media_ids = list(dict.fromkeys(int(media_id) for media_id in (media_ids or [])))
+    if selected_media_ids and stage != "transcribe":
+        raise ValueError("--media-id can only be used with --stage transcribe")
     init_db()
     stats = VoteExplanationBackfillStats(years=selected_years)
     if stage in {"all", "discover", "worker"}:
@@ -954,6 +1334,7 @@ def backfill_wyoming_vote_explanations(
             settings=config,
             limit=limit_media,
             force=force,
+            media_ids=selected_media_ids,
             logger=logger,
         )
         stats.transcripts_added = added

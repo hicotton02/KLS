@@ -1,8 +1,11 @@
+import pytest
 from fastapi.testclient import TestClient
 
+from app import wyoming_vote_explanations as explanations
 from app.db import (
     connect,
     get_bill_vote_explanation_scan,
+    get_legislative_media,
     list_bill_vote_explanations,
     list_legislative_media,
     replace_bill_roll_calls,
@@ -12,10 +15,16 @@ from app.db import (
     upsert_legislative_media,
 )
 from app.main import app
+from app.settings import get_settings
 from app.wyoming_vote_explanations import (
+    TranscriptResult,
+    _merge_transcript_segments,
+    _transcription_chunk_quality_issue,
+    _transcription_models_url,
     find_bill_sections,
     parse_youtube_json3,
     seed_curated_wyoming_examples,
+    transcribe_wyoming_media,
 )
 
 
@@ -95,6 +104,112 @@ def test_parse_youtube_json3_and_find_bill_sections() -> None:
     assert "Senate file 101" in segments[0]["text"]
     sections = find_bill_sections(segments, ["SF0101", "HB0002"])
     assert sections == [{"bill_num": "SF0101", "start": 0, "end": 1800}]
+
+
+def test_find_bill_sections_matches_spoken_bill_numbers() -> None:
+    cases = [
+        ("The next file is Senate File four.", "SF0004"),
+        ("The committee considered Senate File eleven.", "SF0011"),
+        ("House Bill eleven received a do-pass recommendation.", "HB0011"),
+    ]
+    for text, bill_num in cases:
+        sections = find_bill_sections([{"start": 10, "end": 15, "text": text}], [bill_num])
+        assert [section["bill_num"] for section in sections] == [bill_num]
+
+    assert not find_bill_sections(
+        [{"start": 10, "end": 15, "text": "House Bill eleven received a do-pass recommendation."}],
+        ["HB0111"],
+    )
+
+
+def test_transcription_quality_filter_and_models_endpoint() -> None:
+    assert _transcription_models_url("http://stt.example/v1/audio/transcriptions") == (
+        "http://stt.example/v1/models"
+    )
+
+
+def test_merge_transcript_segments_clamps_subsecond_timestamp_ranges() -> None:
+    segments = _merge_transcript_segments(
+        [
+            {"start": 10, "end": 10, "text": "Short response."},
+            {"start": 30, "end": 29, "text": "Another response."},
+        ]
+    )
+
+    assert [(segment["start"], segment["end"]) for segment in segments] == [(10, 11), (30, 31)]
+    assert _transcription_chunk_quality_issue(
+        duration_seconds=120,
+        density=52,
+        rejected_ratio=0.616,
+        raw_segment_count=268,
+    ) == "chunk rejected 62% of transcript segments at 52.0 words per minute"
+    assert (
+        _transcription_chunk_quality_issue(
+            duration_seconds=60,
+            density=250,
+            rejected_ratio=0,
+            raw_segment_count=20,
+        )
+        is None
+    )
+
+
+def test_transcribe_exact_media_id_does_not_process_other_pending_media(monkeypatch) -> None:
+    target_id = upsert_legislative_media(
+        {
+            "state": "wy",
+            "year": 2098,
+            "session_date": "2098-03-05",
+            "chamber": "H",
+            "source_url": "https://www.youtube.com/watch?v=target",
+            "source_kind": "youtube",
+            "external_id": "target",
+            "title": "Target recording",
+        }
+    )
+    other_id = upsert_legislative_media(
+        {
+            "state": "wy",
+            "year": 2098,
+            "session_date": "2098-03-06",
+            "chamber": "S",
+            "source_url": "https://www.youtube.com/watch?v=other",
+            "source_kind": "youtube",
+            "external_id": "other",
+            "title": "Other recording",
+        }
+    )
+    update_legislative_media_transcript(target_id, status="failed", error="Prior attempt failed")
+    processed: list[int] = []
+
+    def fake_fetch(media, _settings, *, logger=None):
+        processed.append(int(media["id"]))
+        return TranscriptResult(
+            status="available",
+            source="speech_to_text",
+            segments=[{"start": 0, "end": 2, "text": "Test speech."}],
+            duration_seconds=2,
+        )
+
+    monkeypatch.setattr(explanations, "fetch_media_transcript", fake_fetch)
+
+    assert transcribe_wyoming_media(
+        [2098],
+        settings=get_settings(),
+        media_ids=[target_id],
+        force=True,
+    ) == (1, 0, 0)
+    assert processed == [target_id]
+    assert get_legislative_media(target_id)["transcript_status"] == "available"
+    assert get_legislative_media(other_id)["transcript_status"] == "pending"
+
+    with pytest.raises(ValueError, match="not in the selected Wyoming years"):
+        transcribe_wyoming_media(
+            [2097],
+            settings=get_settings(),
+            media_ids=[target_id],
+            force=True,
+        )
 
 
 def test_curated_example_uses_final_bill_vote_after_statement_date() -> None:

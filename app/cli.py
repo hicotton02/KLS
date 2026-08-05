@@ -112,6 +112,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run one backfill stage or the full pipeline",
     )
     explanation_parser.add_argument("--limit-media", type=int, help="Optional max recordings to process")
+    explanation_parser.add_argument(
+        "--media-id",
+        action="append",
+        type=int,
+        help="Process one exact legislative-media ID; repeat to select more than one",
+    )
     explanation_parser.add_argument("--force", action="store_true", help="Reprocess completed recordings")
 
     sync_parser = subparsers.add_parser("sync", help="Sync supported state and federal bills into the local database")
@@ -508,6 +514,7 @@ def main() -> None:
             stage=args.stage,
             limit_media=args.limit_media,
             force=args.force,
+            media_ids=args.media_id,
             logger=print,
         )
         print(json.dumps(asdict(summary), indent=2))

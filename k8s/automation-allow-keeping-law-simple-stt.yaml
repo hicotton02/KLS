@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-keeping-law-simple-wyoming-transcription
+  namespace: automation
+spec:
+  podSelector:
+    matchLabels:
+      app: automation-stt-gpu1-router
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keeping-law-simple
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: keeping-law-simple
+              app.kubernetes.io/component: wyoming-explanations
+      ports:
+        - protocol: TCP
+          port: 8000
