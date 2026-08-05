@@ -261,6 +261,34 @@ def test_caption_rate_limit_falls_back_to_transcription(monkeypatch) -> None:
     assert "falling back to transcription" in logs[0]
 
 
+@pytest.mark.parametrize(
+    ("source_url", "expected"),
+    [
+        ("s://youtu.be/wFUJMqXGsBE", "https://youtu.be/wFUJMqXGsBE"),
+        ("wyoleg.gov/2018/Audio/session.mp3", "https://wyoleg.gov/2018/Audio/session.mp3"),
+        ("//www.wyoleg.gov/2020/Audio/session.mp3", "https://www.wyoleg.gov/2020/Audio/session.mp3"),
+    ],
+)
+def test_normalize_official_media_source_urls(source_url: str, expected: str) -> None:
+    assert explanations._normalize_media_source_url(source_url) == expected
+
+
+def test_invalid_media_source_url_fails_without_calling_transcription(monkeypatch) -> None:
+    monkeypatch.setattr(
+        explanations,
+        "_transcribe_with_api",
+        lambda *_args, **_kwargs: pytest.fail("Invalid media must not reach transcription"),
+    )
+
+    result = explanations.fetch_media_transcript(
+        {"id": 123, "source_kind": "youtube", "source_url": "not-a-url"},
+        SimpleNamespace(transcription_api_url="http://stt.example", local_transcription_model=""),
+    )
+
+    assert result.status == "failed"
+    assert result.error == "The official recording source URL is invalid."
+
+
 def test_transcription_claims_are_distinct_and_stale_claims_recover() -> None:
     first_id = upsert_legislative_media(
         {

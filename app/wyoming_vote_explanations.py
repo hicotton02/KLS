@@ -15,7 +15,6 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 from yt_dlp import YoutubeDL
-from yt_dlp.utils import DownloadError
 
 from app.db import (
     claim_legislative_media_explanation_scan,
@@ -98,6 +97,21 @@ def _youtube_id(source_url: str) -> str | None:
     return None
 
 
+def _normalize_media_source_url(source_url: object) -> str:
+    value = str(source_url or "").strip()
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    host = parsed.netloc.casefold().split(":", 1)[0]
+    if parsed.scheme.casefold() == "s" and host in YOUTUBE_HOSTS:
+        return parsed._replace(scheme="https").geturl()
+    if value.startswith("//"):
+        return f"https:{value}"
+    if value.casefold().startswith(("wyoleg.gov/", "www.wyoleg.gov/")):
+        return f"https://{value}"
+    return value
+
+
 def _source_kind(source_url: str) -> tuple[str, str | None]:
     video_id = _youtube_id(source_url)
     return ("youtube", video_id) if video_id else ("official_media", None)
@@ -128,7 +142,7 @@ def discover_wyoming_media(
                 for raw_media in session.get("chamberAudioFiles") or []:
                     if not isinstance(raw_media, dict):
                         continue
-                    source_url = str(raw_media.get("filePath") or "").strip()
+                    source_url = _normalize_media_source_url(raw_media.get("filePath"))
                     chamber = str(raw_media.get("chamber") or "").strip().upper()
                     if not source_url or chamber not in {"H", "S"}:
                         continue
@@ -195,7 +209,7 @@ def _extract_youtube_info(source_url: str, *, download: bool = False, output_tem
                 if not isinstance(info, dict):
                     raise RuntimeError("YouTube returned no media information")
                 return info
-        except DownloadError as exc:
+        except Exception as exc:  # yt-dlp raises several networking exception types.
             last_error = exc
             if attempt == 3:
                 break
@@ -722,10 +736,16 @@ def fetch_media_transcript(
     logger: Logger | None = None,
 ) -> TranscriptResult:
     try:
+        source_url = _normalize_media_source_url(media.get("source_url"))
+        parsed_source = urlparse(source_url)
+        if parsed_source.scheme.casefold() not in {"http", "https"} or not parsed_source.netloc:
+            return TranscriptResult(status="failed", error="The official recording source URL is invalid.")
+        normalized_media = dict(media)
+        normalized_media["source_url"] = source_url
         captions: TranscriptResult | None = None
-        if media.get("source_kind") == "youtube":
+        if normalized_media.get("source_kind") == "youtube":
             try:
-                captions = _youtube_captions(str(media["source_url"]), settings)
+                captions = _youtube_captions(source_url, settings)
             except httpx.HTTPError as exc:
                 if logger:
                     logger(
@@ -739,9 +759,9 @@ def fetch_media_transcript(
             if captions.status == "available":
                 return captions
         if settings.transcription_api_url:
-            return _transcribe_with_api(media, settings, logger=logger)
+            return _transcribe_with_api(normalized_media, settings, logger=logger)
         if settings.local_transcription_model:
-            return _transcribe_locally(media, settings)
+            return _transcribe_locally(normalized_media, settings)
         return captions or TranscriptResult(
             status="needs_transcription",
             error="No transcription service is configured.",
