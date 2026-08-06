@@ -227,6 +227,13 @@ ON legislative_media(state, year, session_date, chamber, time_of_day);
 CREATE INDEX IF NOT EXISTS idx_legislative_media_work
 ON legislative_media(state, transcript_status, explanation_scan_status, year);
 
+CREATE TABLE IF NOT EXISTS pipeline_circuit_breakers (
+    name TEXT PRIMARY KEY,
+    open_until TEXT NOT NULL,
+    reason TEXT,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS bill_vote_explanation_scans (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     state TEXT NOT NULL,
@@ -1399,6 +1406,56 @@ def _parse_explanation_scan_row(row: Mapping[str, Any] | None) -> dict[str, Any]
     parsed = dict(row)
     _parse_json_field(parsed, "details_json", default={})
     return parsed
+
+
+def get_pipeline_circuit_breaker(name: str) -> dict[str, Any] | None:
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT * FROM pipeline_circuit_breakers WHERE name = ?",
+            (str(name),),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def pipeline_circuit_breaker_is_open(name: str, *, now: datetime | None = None) -> bool:
+    row = get_pipeline_circuit_breaker(name)
+    if row is None:
+        return False
+    try:
+        open_until = datetime.fromisoformat(str(row["open_until"]))
+    except (TypeError, ValueError):
+        return False
+    if open_until.tzinfo is None:
+        open_until = open_until.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return open_until > current
+
+
+def open_pipeline_circuit_breaker(name: str, *, cooldown_seconds: int, reason: str | None = None) -> str:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    open_until = (now + timedelta(seconds=max(1, int(cooldown_seconds)))).isoformat()
+    payload = {
+        "name": str(name),
+        "open_until": open_until,
+        "reason": str(reason or "")[:1000] or None,
+        "updated_at": now.isoformat(),
+    }
+    with connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO pipeline_circuit_breakers (name, open_until, reason, updated_at)
+            VALUES (:name, :open_until, :reason, :updated_at)
+            ON CONFLICT(name) DO UPDATE SET
+                open_until = excluded.open_until,
+                reason = excluded.reason,
+                updated_at = excluded.updated_at
+            """,
+            payload,
+        )
+        connection.commit()
+    return open_until
 
 
 def upsert_legislative_media(payload: dict[str, Any]) -> int:

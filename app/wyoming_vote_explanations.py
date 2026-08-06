@@ -6,6 +6,7 @@ import re
 import tempfile
 import time
 import wave
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
@@ -27,6 +28,8 @@ from app.db import (
     list_legislative_media,
     list_roll_calls_for_session,
     mark_legislative_media_explanation_scan,
+    open_pipeline_circuit_breaker,
+    pipeline_circuit_breaker_is_open,
     replace_media_vote_explanations,
     update_legislative_media_transcript,
     upsert_bill_vote_explanation_scans,
@@ -41,6 +44,7 @@ from app.wyoming_api import WyomingApiClient
 
 Logger = Callable[[str], None]
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+YOUTUBE_CAPTION_CIRCUIT = "wyoming-youtube-captions"
 TRANSCRIPTION_SAMPLE_RATE = 16_000
 TRANSCRIPTION_CHUNK_SECONDS = 120
 TRANSCRIPTION_RETRY_SECONDS = 60
@@ -612,6 +616,45 @@ def _transcribe_api_chunk(
     return segments, elapsed, diagnostics
 
 
+def _transcribe_api_chunk_with_quality_retry(
+    client: httpx.Client,
+    api_url: str,
+    service_choice: str,
+    chunk: dict[str, Any],
+    retry_workdir: Path,
+    *,
+    chunk_index: int,
+    logger: Logger | None = None,
+) -> tuple[list[dict[str, Any]], float]:
+    processing_seconds = 0.0
+    try:
+        segments, elapsed, _diagnostics = _transcribe_api_chunk(
+            client,
+            api_url,
+            service_choice,
+            chunk,
+            logger=logger,
+        )
+        return segments, elapsed
+    except TranscriptionChunkQualityError as exc:
+        processing_seconds += exc.elapsed
+        if logger:
+            logger(f"Chunk {chunk_index} failed quality ({exc}); retrying as one-minute pieces.")
+
+    segments = []
+    for retry_chunk in _split_transcription_wav_chunk(chunk, retry_workdir):
+        retry_segments, elapsed, _diagnostics = _transcribe_api_chunk(
+            client,
+            api_url,
+            service_choice,
+            retry_chunk,
+            logger=logger,
+        )
+        processing_seconds += elapsed
+        segments.extend(retry_segments)
+    return segments, processing_seconds
+
+
 def _transcribe_with_api(
     media: dict[str, Any],
     settings: Settings,
@@ -629,34 +672,33 @@ def _transcribe_with_api(
             follow_redirects=True,
         ) as client:
             service_choice = _transcription_service_choice(client, settings.transcription_api_url)
-            for index, chunk in enumerate(chunks, start=1):
-                try:
-                    chunk_segments, elapsed, _diagnostics = _transcribe_api_chunk(
+            chunk_concurrency = max(
+                1,
+                min(len(chunks), int(getattr(settings, "transcription_chunk_concurrency", 4))),
+            )
+            with ThreadPoolExecutor(max_workers=chunk_concurrency) as executor:
+                futures = [
+                    executor.submit(
+                        _transcribe_api_chunk_with_quality_retry,
                         client,
                         settings.transcription_api_url,
                         service_choice,
                         chunk,
+                        workdir / "chunks",
+                        chunk_index=index,
                         logger=logger,
                     )
-                    processing_seconds += elapsed
-                    segments.extend(chunk_segments)
-                    continue
-                except TranscriptionChunkQualityError as exc:
-                    processing_seconds += exc.elapsed
-                    if logger:
-                        logger(f"Chunk {index} failed quality ({exc}); retrying as one-minute pieces.")
-
-                retry_chunks = _split_transcription_wav_chunk(chunk, workdir / "chunks")
-                for retry_chunk in retry_chunks:
-                    retry_segments, elapsed, _diagnostics = _transcribe_api_chunk(
-                        client,
-                        settings.transcription_api_url,
-                        service_choice,
-                        retry_chunk,
-                        logger=logger,
-                    )
-                    processing_seconds += elapsed
-                    segments.extend(retry_segments)
+                    for index, chunk in enumerate(chunks, start=1)
+                ]
+                try:
+                    for future in as_completed(futures):
+                        chunk_segments, elapsed = future.result()
+                        processing_seconds += elapsed
+                        segments.extend(chunk_segments)
+                except Exception:
+                    for future in futures:
+                        future.cancel()
+                    raise
 
         if not segments:
             return TranscriptResult(status="failed", error="The transcription service returned no timestamped speech")
@@ -744,18 +786,33 @@ def fetch_media_transcript(
         normalized_media["source_url"] = source_url
         captions: TranscriptResult | None = None
         if normalized_media.get("source_kind") == "youtube":
-            try:
-                captions = _youtube_captions(source_url, settings)
-            except httpx.HTTPError as exc:
-                if logger:
-                    logger(
-                        f"Published captions were unavailable for media {media['id']} ({exc}); "
-                        "falling back to transcription."
-                    )
+            if pipeline_circuit_breaker_is_open(YOUTUBE_CAPTION_CIRCUIT):
                 captions = TranscriptResult(
                     status="needs_transcription",
-                    error=f"Published captions were temporarily unavailable: {exc}",
+                    error="Published caption lookup is cooling down after YouTube rate limiting.",
                 )
+                if logger:
+                    logger(f"Skipping published captions for media {media['id']} during the YouTube cooldown.")
+            else:
+                try:
+                    captions = _youtube_captions(source_url, settings)
+                except httpx.HTTPError as exc:
+                    response = getattr(exc, "response", None)
+                    if response is not None and response.status_code == 429:
+                        open_pipeline_circuit_breaker(
+                            YOUTUBE_CAPTION_CIRCUIT,
+                            cooldown_seconds=int(getattr(settings, "youtube_caption_cooldown_seconds", 3600)),
+                            reason=str(exc),
+                        )
+                    if logger:
+                        logger(
+                            f"Published captions were unavailable for media {media['id']} ({exc}); "
+                            "falling back to transcription."
+                        )
+                    captions = TranscriptResult(
+                        status="needs_transcription",
+                        error=f"Published captions were temporarily unavailable: {exc}",
+                    )
             if captions.status == "available":
                 return captions
         if settings.transcription_api_url:

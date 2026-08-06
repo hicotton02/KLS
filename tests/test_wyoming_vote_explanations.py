@@ -1,3 +1,4 @@
+import threading
 from types import SimpleNamespace
 
 import httpx
@@ -13,6 +14,7 @@ from app.db import (
     get_legislative_media,
     list_bill_vote_explanations,
     list_legislative_media,
+    pipeline_circuit_breaker_is_open,
     replace_bill_roll_calls,
     replace_media_vote_explanations,
     update_legislative_media_transcript,
@@ -240,8 +242,11 @@ def test_caption_rate_limit_falls_back_to_transcription(monkeypatch) -> None:
         segments=[{"start": 0, "end": 2, "text": "Test speech."}],
     )
     logs: list[str] = []
+    caption_calls = 0
 
     def rate_limited_captions(_source_url, _settings):
+        nonlocal caption_calls
+        caption_calls += 1
         raise httpx.HTTPStatusError("rate limited", request=request, response=response)
 
     monkeypatch.setattr(explanations, "_youtube_captions", rate_limited_captions)
@@ -251,14 +256,64 @@ def test_caption_rate_limit_falls_back_to_transcription(monkeypatch) -> None:
         lambda media, settings, *, logger=None: expected,
     )
 
-    result = explanations.fetch_media_transcript(
+    settings = SimpleNamespace(
+        transcription_api_url="http://stt.example",
+        local_transcription_model="",
+        youtube_caption_cooldown_seconds=3600,
+    )
+    first_result = explanations.fetch_media_transcript(
         {"id": 123, "source_kind": "youtube", "source_url": "https://youtu.be/test"},
-        SimpleNamespace(transcription_api_url="http://stt.example", local_transcription_model=""),
+        settings,
+        logger=logs.append,
+    )
+    second_result = explanations.fetch_media_transcript(
+        {"id": 124, "source_kind": "youtube", "source_url": "https://youtu.be/test-two"},
+        settings,
         logger=logs.append,
     )
 
-    assert result == expected
+    assert first_result == expected
+    assert second_result == expected
+    assert caption_calls == 1
+    assert pipeline_circuit_breaker_is_open(explanations.YOUTUBE_CAPTION_CIRCUIT) is True
     assert "falling back to transcription" in logs[0]
+    assert any("during the YouTube cooldown" in message for message in logs)
+
+
+def test_transcription_chunks_use_configured_concurrency(monkeypatch, tmp_path) -> None:
+    barrier = threading.Barrier(2)
+    thread_ids: set[int] = set()
+    lock = threading.Lock()
+    chunks = [
+        {"path": tmp_path / "chunk-1.wav", "offset_seconds": 0, "duration_seconds": 120},
+        {"path": tmp_path / "chunk-2.wav", "offset_seconds": 120, "duration_seconds": 120},
+    ]
+
+    monkeypatch.setattr(explanations, "_download_media", lambda *_args: tmp_path / "media.webm")
+    monkeypatch.setattr(explanations, "_write_transcription_audio_chunks", lambda *_args: chunks)
+    monkeypatch.setattr(explanations, "_transcription_service_choice", lambda *_args: "test-stt")
+
+    def fake_transcribe(_client, _api_url, _service_choice, chunk, *, logger=None):
+        with lock:
+            thread_ids.add(threading.get_ident())
+        barrier.wait(timeout=2)
+        offset = int(chunk["offset_seconds"])
+        return ([{"start": offset, "end": offset + 2, "text": f"Speech at {offset}."}], 0.1, {})
+
+    monkeypatch.setattr(explanations, "_transcribe_api_chunk", fake_transcribe)
+
+    result = explanations._transcribe_with_api(
+        {"id": 123, "source_url": "https://youtu.be/test", "source_kind": "youtube"},
+        SimpleNamespace(
+            transcription_api_url="http://stt.example/v1/audio/transcriptions",
+            transcription_timeout_seconds=30,
+            transcription_chunk_concurrency=2,
+        ),
+    )
+
+    assert result.status == "available"
+    assert len(thread_ids) == 2
+    assert [segment["start"] for segment in result.segments or []] == [0, 120]
 
 
 @pytest.mark.parametrize(

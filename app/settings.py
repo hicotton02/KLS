@@ -60,6 +60,8 @@ class Settings:
     wyoming_explanation_years: tuple[int, ...]
     transcription_api_url: str
     transcription_timeout_seconds: float
+    transcription_chunk_concurrency: int
+    youtube_caption_cooldown_seconds: int
     local_transcription_model: str
     local_transcription_device: str
     local_transcription_compute_type: str
@@ -228,6 +230,14 @@ def get_settings() -> Settings:
         ),
         transcription_api_url=(os.getenv("KLS_TRANSCRIPTION_API_URL", "") or "").strip(),
         transcription_timeout_seconds=float(os.getenv("KLS_TRANSCRIPTION_TIMEOUT_SECONDS", "1800")),
+        transcription_chunk_concurrency=max(
+            1,
+            min(16, int(os.getenv("KLS_TRANSCRIPTION_CHUNK_CONCURRENCY", "4"))),
+        ),
+        youtube_caption_cooldown_seconds=max(
+            60,
+            int(os.getenv("KLS_YOUTUBE_CAPTION_COOLDOWN_SECONDS", "3600")),
+        ),
         local_transcription_model=(os.getenv("KLS_LOCAL_TRANSCRIPTION_MODEL", "") or "").strip(),
         local_transcription_device=(os.getenv("KLS_LOCAL_TRANSCRIPTION_DEVICE", "cpu") or "cpu").strip(),
         local_transcription_compute_type=(

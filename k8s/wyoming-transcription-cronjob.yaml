@@ -15,7 +15,7 @@ spec:
     spec:
       activeDeadlineSeconds: 10800
       backoffLimit: 2
-      completions: 24
+      completions: 96
       parallelism: 24
       ttlSecondsAfterFinished: 3600
       template:
@@ -45,7 +45,7 @@ spec:
                 - --stage
                 - transcribe
                 - --limit-media
-                - "4"
+                - "1"
               env:
                 - name: PGPASSWORD
                   valueFrom:
@@ -58,6 +58,10 @@ spec:
                   value: http://automation-stt-gpu1-router.automation.svc.cluster.local/v1/audio/transcriptions
                 - name: KLS_TRANSCRIPTION_TIMEOUT_SECONDS
                   value: "7500"
+                - name: KLS_TRANSCRIPTION_CHUNK_CONCURRENCY
+                  value: "6"
+                - name: KLS_YOUTUBE_CAPTION_COOLDOWN_SECONDS
+                  value: "3600"
               envFrom:
                 - configMapRef:
                     name: keeping-law-simple-config

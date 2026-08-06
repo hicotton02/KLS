@@ -55,7 +55,7 @@ existing summaries and do not wait for summary generation.
 The recording pipeline is split into three bounded CronJobs:
 
 1. `keeping-law-simple-wyoming-media-discovery` catalogs recordings hourly.
-2. `keeping-law-simple-wyoming-transcriptions` runs 24 lightweight producers, each claiming up to four recordings and submitting GPU work through the durable STT queue.
+2. `keeping-law-simple-wyoming-transcriptions` keeps up to 24 lightweight producers active. Each producer claims one recording, submits up to six chunks concurrently through the durable STT queue, and is replaced until the job has attempted 96 recordings.
 3. `keeping-law-simple-wyoming-reasoning` runs four workers, each claiming up to two completed transcripts.
 
 Transcription and reason extraction claim work with conditional database
@@ -66,6 +66,8 @@ without assigning GPUs directly to KLS pods or starving interactive services.
 The durable queue holds excess requests while the GPU capacity broker assigns
 compatible idle slots. Producer timeouts cover the queue's full two-hour wait
 window, so a queued request can finish without the caller abandoning it.
+When YouTube rate-limits published captions, a shared one-hour cooldown sends
+later recordings directly to STT instead of repeating the blocked caption call.
 Items that fail transcription or reason extraction wait six hours before they
 can be claimed again, preventing a bad recording from spinning in a tight loop.
 Reason extraction uses the shared service's background queue and a timeout that
