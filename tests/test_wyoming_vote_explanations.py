@@ -35,6 +35,35 @@ from app.wyoming_vote_explanations import (
 )
 
 
+def test_transcription_stage_defers_bill_status_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    refresh_calls: list[list[int]] = []
+    monkeypatch.setattr(explanations, "init_db", lambda: None)
+    monkeypatch.setattr(explanations, "transcribe_wyoming_media", lambda *args, **kwargs: (1, 0, 0))
+    monkeypatch.setattr(
+        explanations,
+        "refresh_bill_explanation_scans",
+        lambda years: refresh_calls.append(list(years)) or 7,
+    )
+    settings = SimpleNamespace(wyoming_explanation_years=[2098])
+
+    transcription = explanations.backfill_wyoming_vote_explanations(
+        years=[2098],
+        stage="transcribe",
+        limit_media=1,
+        settings=settings,
+    )
+    status = explanations.backfill_wyoming_vote_explanations(
+        years=[2098],
+        stage="status",
+        settings=settings,
+    )
+
+    assert transcription.transcripts_added == 1
+    assert transcription.bills_updated == 0
+    assert status.bills_updated == 7
+    assert refresh_calls == [[2098]]
+
+
 def _seed_bill_and_vote() -> None:
     with connect() as connection:
         connection.execute(

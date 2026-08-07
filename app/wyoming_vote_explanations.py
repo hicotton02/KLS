@@ -1483,5 +1483,6 @@ def backfill_wyoming_vote_explanations(
         )
         stats.media_scanned = scanned
         stats.explanations_found = explanations
-    stats.bills_updated = refresh_bill_explanation_scans(selected_years)
+    if stage != "transcribe":
+        stats.bills_updated = refresh_bill_explanation_scans(selected_years)
     return stats
