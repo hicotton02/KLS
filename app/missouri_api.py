@@ -9,6 +9,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from app.http_documents import absolute_url, fetch_document_text
+from app.http_retry import get_with_retries
 from app.settings import Settings
 
 
@@ -96,8 +97,19 @@ class MissouriApiClient:
     def fetch_public_document_text(self, url: str | None) -> str:
         return fetch_document_text(self.document_client, url)
 
+    @staticmethod
+    def _get(client: httpx.Client, url: str, **kwargs: Any) -> httpx.Response:
+        return get_with_retries(
+            client,
+            url,
+            max_attempts=6,
+            base_delay_seconds=2.0,
+            max_delay_seconds=30.0,
+            **kwargs,
+        )
+
     def _fetch_house_year_bills(self, year: int) -> list[dict[str, Any]]:
-        response = self.house_client.get("/billlist.aspx")
+        response = self._get(self.house_client, "/billlist.aspx")
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -164,7 +176,11 @@ class MissouriApiClient:
         return items
 
     def _fetch_senate_year_bills(self, year: int) -> list[dict[str, Any]]:
-        response = self.senate_client.get("/BillTracking/Bills/BillList", params={"year": str(year), "session": "R"})
+        response = self._get(
+            self.senate_client,
+            "/BillTracking/Bills/BillList",
+            params={"year": str(year), "session": "R"},
+        )
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -219,7 +235,7 @@ class MissouriApiClient:
         return items
 
     def _fetch_house_bill_detail(self, detail_path: str) -> dict[str, Any]:
-        detail_response = self.house_client.get(detail_path)
+        detail_response = self._get(self.house_client, detail_path)
         detail_response.raise_for_status()
         detail_soup = BeautifulSoup(detail_response.text, "html.parser")
 
@@ -228,11 +244,11 @@ class MissouriApiClient:
         document_path = f"/BillDocumentMobile.aspx?bill={bill_num}&code=R+&year={year}"
         actions_path = f"/BillActions.aspx?bill={bill_num}&code=R+&sortDesc=true&year={year}"
 
-        document_response = self.house_client.get(document_path)
+        document_response = self._get(self.house_client, document_path)
         document_response.raise_for_status()
         document_soup = BeautifulSoup(document_response.text, "html.parser")
 
-        actions_response = self.house_client.get(actions_path)
+        actions_response = self._get(self.house_client, actions_path)
         actions_response.raise_for_status()
         actions_soup = BeautifulSoup(actions_response.text, "html.parser")
 
@@ -309,7 +325,7 @@ class MissouriApiClient:
         }
 
     def _fetch_senate_bill_detail(self, detail_path: str) -> dict[str, Any]:
-        detail_response = self.senate_client.get(detail_path)
+        detail_response = self._get(self.senate_client, detail_path)
         detail_response.raise_for_status()
         detail_soup = BeautifulSoup(detail_response.text, "html.parser")
 
@@ -415,7 +431,11 @@ class MissouriApiClient:
             params["billSuffix"] = bill_suffix
         if session_type:
             params["sessionType"] = session_type
-        response = self.senate_client.get("/BillTracking/Bills/BillInformation", params=params)
+        response = self._get(
+            self.senate_client,
+            "/BillTracking/Bills/BillInformation",
+            params=params,
+        )
         response.raise_for_status()
         return response.text
 

@@ -1,9 +1,34 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
+from app import missouri_api
 from app.missouri_api import MissouriApiClient
 from app.settings import get_settings
+
+
+def test_missouri_requests_use_shared_retry_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    expected = httpx.Response(200, request=httpx.Request("GET", "https://example.test"))
+
+    def fake_get(client: httpx.Client, url: str, **kwargs: object) -> httpx.Response:
+        captured.update({"client": client, "url": url, **kwargs})
+        return expected
+
+    monkeypatch.setattr(missouri_api, "get_with_retries", fake_get)
+    client = httpx.Client()
+    try:
+        response = MissouriApiClient._get(client, "/bills", params={"year": "2026"})
+    finally:
+        client.close()
+
+    assert response is expected
+    assert captured["url"] == "/bills"
+    assert captured["max_attempts"] == 6
+    assert captured["base_delay_seconds"] == 2.0
+    assert captured["max_delay_seconds"] == 30.0
+    assert captured["params"] == {"year": "2026"}
 
 
 def test_fetch_year_bills_combines_house_and_senate_for_requested_year() -> None:
