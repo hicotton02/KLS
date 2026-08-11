@@ -8,6 +8,7 @@ resources:
   - postgres-statefulset.yaml
   - deployment.yaml
   - service.yaml
+  - site-deployment.yaml
   - ingress.yaml
   - cronjob.yaml
   - wyoming-media-discovery-cronjob.yaml
