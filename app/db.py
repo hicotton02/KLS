@@ -4,7 +4,7 @@ import json
 import os
 import re
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -847,6 +847,47 @@ def get_bill(state: str, year: int, bill_num: str, special_session_value: int | 
     with connect() as connection:
         row = connection.execute(sql, params).fetchone()
     return _parse_row(row)
+
+
+def get_bills_by_keys(
+    state: str,
+    keys: Iterable[tuple[int, str, int | None]],
+) -> dict[tuple[int, int, str], dict[str, Any]]:
+    normalized_keys = list(
+        dict.fromkeys(
+            (
+                int(year),
+                str(bill_num),
+                normalize_special_session(special_session_value),
+            )
+            for year, bill_num, special_session_value in keys
+        )
+    )
+    if not normalized_keys:
+        return {}
+
+    clauses: list[str] = []
+    params: list[Any] = [state]
+    for year, bill_num, special_session_key in normalized_keys:
+        clauses.append("(year = ? AND bill_num = ? AND special_session_key = ?)")
+        params.extend((year, bill_num, special_session_key))
+
+    with connect() as connection:
+        rows = connection.execute(
+            f"SELECT * FROM bills WHERE state = ? AND ({' OR '.join(clauses)})",
+            params,
+        ).fetchall()
+
+    bills = [_parse_row(row) for row in rows]
+    return {
+        (
+            int(bill["year"]),
+            int(bill["special_session_key"]),
+            str(bill["bill_num"]),
+        ): bill
+        for bill in bills
+        if bill is not None
+    }
 
 
 def list_bill_amendments(
@@ -2536,6 +2577,8 @@ def get_legislator_voting_record(
             LEFT JOIN (
                 SELECT state, year, special_session_key, bill_num, roll_call_key, COUNT(*) AS attributed_votes
                 FROM bill_roll_call_votes
+                WHERE state = ?
+                  AND year IN ({year_placeholders})
                 GROUP BY state, year, special_session_key, bill_num, roll_call_key
             ) AS vote_counts
               ON vote_counts.state = roll_calls.state
@@ -2551,7 +2594,7 @@ def get_legislator_voting_record(
                   + roll_calls.conflict_count + roll_calls.excused_count
               ) > COALESCE(vote_counts.attributed_votes, 0)
             """,
-            (state, coverage_chamber, *coverage_years),
+            (state, *coverage_years, state, coverage_chamber, *coverage_years),
         ).fetchone()
     return {
         "legislator": {

@@ -27,6 +27,7 @@ from app.analytics import (
 from app.db import (
     get_analytics_overview,
     get_bill,
+    get_bills_by_keys,
     get_bill_relationships_for_bill,
     get_bill_vote_explanation_scan,
     get_jurisdiction_rollups,
@@ -1496,12 +1497,25 @@ def api_legislator_voting_record(
 
     published_reasons = []
     reason_year = record["selected_year"]
-    for explanation in list_legislator_vote_explanations("wy", member_key, year=reason_year, limit=50):
-        bill = get_bill(
-            "wy",
-            int(explanation["year"]),
-            str(explanation["bill_num"]),
-            special_session_value=explanation.get("special_session_value"),
+    explanations = list_legislator_vote_explanations("wy", member_key, year=reason_year, limit=50)
+    bills_by_key = get_bills_by_keys(
+        "wy",
+        [
+            (
+                int(explanation["year"]),
+                str(explanation["bill_num"]),
+                explanation.get("special_session_value"),
+            )
+            for explanation in explanations
+        ],
+    )
+    for explanation in explanations:
+        bill = bills_by_key.get(
+            (
+                int(explanation["year"]),
+                normalize_special_session(explanation.get("special_session_value")),
+                str(explanation["bill_num"]),
+            )
         )
         if bill is None:
             continue
