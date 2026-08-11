@@ -41,7 +41,7 @@ def normalize_west_virginia_bill_number(value: str | None) -> str:
     match = re.fullmatch(r"(HB|SB)(\d+)", compact)
     if match:
         return compact
-    return compact
+    return ""
 
 
 class WestVirginiaApiClient:

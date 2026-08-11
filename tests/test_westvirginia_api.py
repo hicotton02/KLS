@@ -19,6 +19,7 @@ def test_fetch_year_bills_reads_official_all_bills_page() -> None:
               <table>
                 <tr><td><a href="Bills_history.cfm?input=1&year=2026&sessiontype=RS&btype=bill">SB 1</a></td><td>First bill</td><td>Signed</td><td>Effective from passage - (February 16, 2026)</td></tr>
                 <tr><td><a href="Bills_history.cfm?input=2&year=2026&sessiontype=RS&btype=bill">HB 2</a></td><td>Second bill</td><td>Pending</td><td>01/14/26</td></tr>
+                <tr><td><a href="Bills_history.cfm?input=3&year=2026&sessiontype=RS&btype=bill">Incorporated into Com. Sub. for SB 251</a></td><td>Status note</td><td></td><td></td></tr>
               </table>
             </body></html>
             """,
