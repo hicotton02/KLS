@@ -13,10 +13,11 @@ spec:
   suspend: false
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 1800
-  successfulJobsHistoryLimit: 2
-  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 0
+  failedJobsHistoryLimit: 1
   jobTemplate:
     spec:
+      ttlSecondsAfterFinished: 3600
       completions: 52
       parallelism: 32
       completionMode: Indexed

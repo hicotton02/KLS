@@ -9,7 +9,7 @@ spec:
   timeZone: America/Denver
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 300
-  successfulJobsHistoryLimit: 1
+  successfulJobsHistoryLimit: 0
   failedJobsHistoryLimit: 1
   jobTemplate:
     spec:
