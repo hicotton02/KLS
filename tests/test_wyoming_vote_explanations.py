@@ -64,6 +64,43 @@ def test_transcription_stage_defers_bill_status_refresh(monkeypatch: pytest.Monk
     assert refresh_calls == [[2098]]
 
 
+def test_extract_stage_refreshes_bill_status_only_after_claiming_media(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan_results = iter([(0, 0), (1, 2)])
+    refresh_calls: list[list[int]] = []
+    monkeypatch.setattr(explanations, "init_db", lambda: None)
+    monkeypatch.setattr(
+        explanations,
+        "scan_wyoming_media",
+        lambda *args, **kwargs: next(scan_results),
+    )
+    monkeypatch.setattr(
+        explanations,
+        "refresh_bill_explanation_scans",
+        lambda years: refresh_calls.append(list(years)) or 7,
+    )
+    settings = SimpleNamespace(wyoming_explanation_years=[2098])
+
+    idle = explanations.backfill_wyoming_vote_explanations(
+        years=[2098],
+        stage="extract",
+        limit_media=1,
+        settings=settings,
+    )
+    active = explanations.backfill_wyoming_vote_explanations(
+        years=[2098],
+        stage="extract",
+        limit_media=1,
+        settings=settings,
+    )
+
+    assert idle.bills_updated == 0
+    assert active.media_scanned == 1
+    assert active.bills_updated == 7
+    assert refresh_calls == [[2098]]
+
+
 def _seed_bill_and_vote() -> None:
     with connect() as connection:
         connection.execute(

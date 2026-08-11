@@ -73,6 +73,7 @@ spec:
                   import os
                   from dataclasses import asdict
 
+                  from app.db import reset_stale_sync_statuses
                   from app.sync_service import SYNC_STATE_ORDER, sync_state_by_name
 
 
@@ -84,6 +85,10 @@ spec:
                       raise RuntimeError(
                           f"KLS sync index {index} is outside 0..{len(SYNC_STATE_ORDER) - 1}."
                       )
+
+                  if index == 0:
+                      cleared = reset_stale_sync_statuses(21600)
+                      print(f"Cleared {cleared} stale sync status rows.", flush=True)
 
                   state = SYNC_STATE_ORDER[index]
                   print(f"Starting source-only KLS sync {index}: {state}", flush=True)

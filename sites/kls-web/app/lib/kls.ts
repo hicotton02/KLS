@@ -434,10 +434,13 @@ export async function getLegislators(filters: { q?: string; year?: string }): Pr
 export async function getLegislatorVotingRecord(
   memberKey: string,
   year?: string,
+  latest = false,
 ): Promise<LegislatorRecordResponse | null> {
   return fetchKls<LegislatorRecordResponse>(
-    `/api/v1/areas/wyoming/legislators/${encodeURIComponent(memberKey)}${queryString({ year })}`,
-    60,
+    `/api/v1/areas/wyoming/legislators/${encodeURIComponent(memberKey)}${queryString({
+      year,
+      latest: latest ? 1 : undefined,
+    })}`,
   );
 }
 

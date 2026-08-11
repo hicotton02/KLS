@@ -77,9 +77,7 @@ async function loadVotingRecord(memberKey: string, requestedYear: string | undef
     return getLegislatorVotingRecord(memberKey, requestedYear);
   }
 
-  const allYears = await getLegislatorVotingRecord(memberKey);
-  const latestYear = allYears?.available_years[0];
-  return latestYear ? getLegislatorVotingRecord(memberKey, String(latestYear)) : allYears;
+  return getLegislatorVotingRecord(memberKey, undefined, true);
 }
 
 export default async function LegislatorVotingRecordPage({

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+import ssl
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -20,6 +22,15 @@ MICHIGAN_BILL_TEXT_PATTERN = re.compile(
 )
 MICHIGAN_PUBLIC_ACT_PATTERN = re.compile(r"\((?:Public Act|PA)\s+(?P<number>\d+)\s+of\s+(?P<year>\d{4})\)", re.IGNORECASE)
 MICHIGAN_AMENDMENT_PATTERN = re.compile(r"\(([HS])-(\d+)\)", re.IGNORECASE)
+MICHIGAN_INTERMEDIATE_CA = (
+    Path(__file__).with_name("certs") / "digicert_global_g2_tls_rsa_sha256_2020_ca1.pem"
+)
+
+
+def _michigan_ssl_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=str(MICHIGAN_INTERMEDIATE_CA))
+    return context
 
 
 def parse_michigan_date(value: str | None) -> str:
@@ -65,6 +76,7 @@ class MichiganApiClient:
             headers={"User-Agent": "keeping-law-simple/1.0"},
             timeout=self.settings.request_timeout_seconds,
             follow_redirects=True,
+            verify=_michigan_ssl_context(),
         )
 
     def close(self) -> None:

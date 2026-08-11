@@ -2407,12 +2407,43 @@ def get_legislator_voting_record(
     member_key: str,
     *,
     year: int | None = None,
+    latest_year_only: bool = False,
     limit: int = 200,
 ) -> dict[str, Any] | None:
     canonical_member_key = _canonical_legislator_member_key(state, member_key)
+    member_params = (state, canonical_member_key, state, canonical_member_key)
     with connect() as connection:
-        rows = connection.execute(
+        year_rows = connection.execute(
             """
+            SELECT DISTINCT votes.year
+            FROM bill_roll_call_votes AS votes
+            WHERE votes.state = ?
+              AND (
+                  votes.member_key = ?
+                  OR votes.member_key IN (
+                      SELECT alias_member_key
+                      FROM legislator_member_aliases
+                      WHERE state = ? AND canonical_member_key = ?
+                  )
+              )
+            ORDER BY votes.year DESC
+            """,
+            member_params,
+        ).fetchall()
+        available_years = [int(row["year"]) for row in year_rows]
+        if not available_years:
+            return None
+
+        selected_year = year
+        if latest_year_only and selected_year is None:
+            selected_year = available_years[0]
+        if selected_year is not None and selected_year not in available_years:
+            return None
+
+        year_clause = " AND votes.year = ?" if selected_year is not None else ""
+        vote_params = (*member_params, selected_year) if selected_year is not None else member_params
+        rows = connection.execute(
+            f"""
             SELECT
                 votes.member_key,
                 votes.source_legislator_id,
@@ -2460,17 +2491,14 @@ def get_legislator_voting_record(
                       WHERE state = ? AND canonical_member_key = ?
                   )
               )
+              {year_clause}
             ORDER BY roll_calls.vote_date DESC, votes.year DESC, votes.bill_num ASC
             """,
-            (state, canonical_member_key, state, canonical_member_key),
+            vote_params,
         ).fetchall()
 
-    all_votes = [dict(row) for row in rows]
-    if not all_votes:
-        return None
-    available_years = sorted({int(row["year"]) for row in all_votes}, reverse=True)
-    selected_votes = [row for row in all_votes if year is None or int(row["year"]) == year]
-    if year is not None and not selected_votes:
+    selected_votes = [dict(row) for row in rows]
+    if not selected_votes:
         return None
 
     positions = ("yes", "no", "absent", "conflict", "excused")
@@ -2486,7 +2514,7 @@ def get_legislator_voting_record(
     counts["total"] = len(selected_votes)
 
     latest = selected_votes[0]
-    coverage_years = [year] if year is not None else available_years
+    coverage_years = [selected_year] if selected_year is not None else available_years
     year_placeholders = ", ".join("?" for _ in coverage_years)
     with connect() as connection:
         identity_row = connection.execute(
@@ -2535,7 +2563,7 @@ def get_legislator_voting_record(
             "chamber": coverage_chamber,
         },
         "available_years": available_years,
-        "selected_year": year,
+        "selected_year": selected_year,
         "counts": counts,
         "coverage": {
             "unattributed_roll_calls": int(coverage_row["unattributed_roll_calls"] or 0) if coverage_row else 0,

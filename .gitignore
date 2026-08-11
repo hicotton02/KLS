@@ -23,6 +23,7 @@ env/
 *.crt
 *.cer
 *.kubeconfig
+!app/certs/*.pem
 
 # Local databases and state
 *.db

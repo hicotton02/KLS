@@ -36,6 +36,8 @@ spec:
           env:
             - name: KLS_API_BASE_URL
               value: http://keeping-law-simple-web.keeping-law-simple.svc.cluster.local
+            - name: NODE_OPTIONS
+              value: --max-old-space-size=512
           readinessProbe:
             httpGet:
               path: /healthz
@@ -55,10 +57,10 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 192Mi
+              memory: 256Mi
             limits:
               cpu: "1"
-              memory: 768Mi
+              memory: 1Gi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

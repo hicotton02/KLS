@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import hashlib
+import ssl
+
 import httpx
 import pytest
 
-from app.michigan_api import MichiganApiClient
+from app.michigan_api import MichiganApiClient, _michigan_ssl_context
 from app.settings import get_settings
+
+
+def test_michigan_ssl_context_includes_published_intermediate() -> None:
+    context = _michigan_ssl_context()
+    fingerprints = {
+        hashlib.sha256(certificate).hexdigest()
+        for certificate in context.get_ca_certs(binary_form=True)
+    }
+
+    assert isinstance(context, ssl.SSLContext)
+    assert "c8025f9fc65fdfc95b3ca8cc7867b9a587b5277973957917463fc813d0b625a9" in fingerprints
 
 
 def test_fetch_year_bills_parses_search_tables() -> None:

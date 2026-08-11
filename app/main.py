@@ -1469,11 +1469,18 @@ def api_legislator_voting_record(
     area_slug: str,
     member_key: str,
     year: int | None = Query(default=None),
+    latest: bool = Query(default=False),
 ) -> JSONResponse:
     jurisdiction = get_jurisdiction(area_slug)
     if jurisdiction is None or jurisdiction.state_code != "wy":
         raise HTTPException(status_code=404, detail="Legislator voting records are not available for this area")
-    record = get_legislator_voting_record("wy", member_key, year=year, limit=300)
+    record = get_legislator_voting_record(
+        "wy",
+        member_key,
+        year=year,
+        latest_year_only=latest,
+        limit=300,
+    )
     if record is None:
         raise HTTPException(status_code=404, detail="Legislator voting record not found")
 
@@ -1488,7 +1495,8 @@ def api_legislator_voting_record(
         vote["bill_href"] = f"/area/wyoming/bill/{vote_year}/{bill_num}{query_string}"
 
     published_reasons = []
-    for explanation in list_legislator_vote_explanations("wy", member_key, year=year, limit=50):
+    reason_year = record["selected_year"]
+    for explanation in list_legislator_vote_explanations("wy", member_key, year=reason_year, limit=50):
         bill = get_bill(
             "wy",
             int(explanation["year"]),

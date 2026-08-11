@@ -321,6 +321,7 @@ def test_public_api_search_area_and_bill_detail() -> None:
 
 def test_public_api_exposes_bill_roll_calls_and_legislator_record() -> None:
     init_db()
+    _seed_state_bill("HB2097", "Older recorded vote", year=2097)
     _seed_state_bill("HB2098", "Recorded vote test", year=2098)
     _seed_state_bill("HB2099", "Second recorded vote", year=2098)
     timestamp = "2098-02-21T21:03:17+00:00"
@@ -332,10 +333,14 @@ def test_public_api_exposes_bill_roll_calls_and_legislator_record() -> None:
         "party": "R",
         "district": "H05",
     }
-    for bill_num, position, vote_id in (("HB2098", "yes", "5361"), ("HB2099", "no", "5362")):
+    for bill_num, position, vote_id, vote_year in (
+        ("HB2097", "yes", "5360", 2097),
+        ("HB2098", "yes", "5361", 2098),
+        ("HB2099", "no", "5362", 2098),
+    ):
         replace_bill_roll_calls(
             "wy",
-            2098,
+            vote_year,
             bill_num,
             payloads=[
                 {
@@ -363,6 +368,10 @@ def test_public_api_exposes_bill_roll_calls_and_legislator_record() -> None:
     detail_response = client.get("/api/v1/areas/wyoming/bills/2098/HB2098")
     directory_response = client.get("/api/v1/areas/wyoming/legislators", params={"q": "smith"})
     record_response = client.get("/api/v1/areas/wyoming/legislators/wy-2093")
+    latest_record_response = client.get(
+        "/api/v1/areas/wyoming/legislators/wy-2093",
+        params={"latest": "true"},
+    )
 
     assert detail_response.status_code == 200
     roll_call = detail_response.json()["roll_calls"][0]
@@ -372,16 +381,21 @@ def test_public_api_exposes_bill_roll_calls_and_legislator_record() -> None:
 
     assert directory_response.status_code == 200
     assert directory_response.json()["legislators"][0]["legislator_name"] == "Scott Smith"
-    assert directory_response.json()["legislators"][0]["total_votes"] == 2
+    assert directory_response.json()["legislators"][0]["total_votes"] == 3
 
     assert record_response.status_code == 200
     record = record_response.json()
     assert record["legislator"]["title"] == "Representative"
-    assert record["counts"]["yes"] == 1
+    assert record["counts"]["yes"] == 2
     assert record["counts"]["no"] == 1
-    assert record["counts"]["total"] == 2
+    assert record["counts"]["total"] == 3
     assert record["coverage"]["unattributed_roll_calls"] == 0
-    assert {vote["bill_num"] for vote in record["votes"]} == {"HB2098", "HB2099"}
+    assert {vote["bill_num"] for vote in record["votes"]} == {"HB2097", "HB2098", "HB2099"}
+    assert latest_record_response.status_code == 200
+    latest_record = latest_record_response.json()
+    assert latest_record["selected_year"] == 2098
+    assert latest_record["counts"]["total"] == 2
+    assert {vote["year"] for vote in latest_record["votes"]} == {2098}
     _assert_no_public_model_metadata(record)
 
 
