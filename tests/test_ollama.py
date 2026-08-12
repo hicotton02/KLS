@@ -66,4 +66,4 @@ def test_vote_explanation_prompt_has_room_for_complete_json() -> None:
     ) == []
 
     assert transport.payload is not None
-    assert transport.payload["options"]["num_predict"] == 5000
+    assert transport.payload["options"]["num_predict"] == 10000
