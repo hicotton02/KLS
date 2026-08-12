@@ -209,6 +209,52 @@ def test_find_bill_sections_merges_overlapping_windows_for_the_same_bill() -> No
     assert senate_sections == [{"bill_num": "SF0101", "start": 55, "end": 320}]
 
 
+def test_explanation_extraction_batches_large_roll_call_rosters(monkeypatch: pytest.MonkeyPatch) -> None:
+    members = [
+        {
+            "member_key": f"wy-{index}",
+            "legislator_name": f"Member {index:02d}",
+            "vote_position": "yes",
+        }
+        for index in range(25)
+    ]
+    roll_call = {
+        "bill_num": "SF0101",
+        "roll_call_key": "vote-101",
+        "catch_title": "Test bill",
+        "members": members,
+    }
+    batches: list[list[str]] = []
+
+    def fake_extract_vote_explanations(**kwargs):
+        batches.append(list(kwargs["lawmakers"]))
+        return []
+
+    monkeypatch.setattr(explanations, "_media_roll_calls", lambda media: [roll_call])
+    monkeypatch.setattr(
+        explanations,
+        "find_bill_sections",
+        lambda segments, by_bill: [{"bill_num": "SF0101", "start": 0, "end": 10}],
+    )
+    monkeypatch.setattr(explanations, "_transcript_text", lambda segments, start, end: "Test transcript")
+
+    result = explanations.extract_media_vote_explanations(
+        {
+            "year": 2098,
+            "source_url": "https://example.test/session",
+            "transcript_json": [{"start": 0, "end": 10, "text": "Test transcript"}],
+        },
+        ollama=SimpleNamespace(extract_vote_explanations=fake_extract_vote_explanations),
+    )
+
+    assert result == []
+    assert [len(batch) for batch in batches] == [10, 10, 5]
+    assert [name for batch in batches for name in batch] == sorted(
+        (member["legislator_name"] for member in members),
+        key=str.casefold,
+    )
+
+
 def test_transcription_quality_filter_and_models_endpoint() -> None:
     assert _transcription_models_url("http://stt.example/v1/audio/transcriptions") == (
         "http://stt.example/v1/models"

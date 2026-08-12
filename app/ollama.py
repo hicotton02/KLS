@@ -277,6 +277,7 @@ Rules:
 - A statement qualifies only when the speaker personally connects a reason to supporting, opposing, or voting on this bill.
 - Ignore the presiding officer's procedural words and statements about amendments unless the speaker clearly ties the reason to the bill itself.
 - Use a lawmaker name exactly as written in the roster. If the speaker cannot be matched to the roster, omit the statement.
+- Return at most one statement per lawmaker. If there are several, use the clearest direct explanation.
 - Copy a short exact passage from the transcript into evidence_text. Do not clean up or rewrite the evidence.
 - start_seconds must be the timestamp printed on the line where that evidence begins.
 - Write reason_summary in plain, neutral language. One or two short sentences. Do not mention a party or speculate.

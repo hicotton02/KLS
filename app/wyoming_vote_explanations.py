@@ -54,6 +54,7 @@ MAX_SHORT_TRANSCRIPTION_WORDS_PER_MINUTE = 260
 MAX_REJECTED_TRANSCRIPTION_SEGMENT_RATIO = 0.65
 SPARSE_REJECTED_TRANSCRIPTION_SEGMENT_RATIO = 0.60
 MIN_WORDS_PER_MINUTE_AFTER_HEAVY_REJECTION = 80
+VOTE_EXPLANATION_LAWMAKER_BATCH_SIZE = 10
 
 
 @dataclass
@@ -1229,48 +1230,49 @@ def extract_media_vote_explanations(
         transcript = _transcript_text(segments, int(section["start"]), int(section["end"]))
         if not transcript:
             continue
-        extracted = ollama.extract_vote_explanations(
-            bill_num=bill_num,
-            bill_title=title,
-            lawmakers=roster,
-            transcript=transcript,
-        )
-        for statement in extracted:
-            member_match = _member_roll_call(bill_roll_calls, str(statement["lawmaker_name"]))
-            if member_match is None:
-                continue
-            roll_call, member = member_match
-            evidence_location = _locate_evidence(
-                segments,
-                str(statement["evidence_text"]),
-                hint=int(statement.get("start_seconds") or 0),
-                start=int(section["start"]),
-                end=int(section["end"]),
+        for start_index in range(0, len(roster), VOTE_EXPLANATION_LAWMAKER_BATCH_SIZE):
+            extracted = ollama.extract_vote_explanations(
+                bill_num=bill_num,
+                bill_title=title,
+                lawmakers=roster[start_index : start_index + VOTE_EXPLANATION_LAWMAKER_BATCH_SIZE],
+                transcript=transcript,
             )
-            if evidence_location is None:
-                continue
-            start_seconds, end_seconds = evidence_location
-            key = (bill_num, str(member["member_key"]))
-            results[key] = {
-                "state": "wy",
-                "year": int(media["year"]),
-                "special_session_value": media.get("special_session_value"),
-                "bill_num": bill_num,
-                "roll_call_key": str(roll_call["roll_call_key"]),
-                "member_key": str(member["member_key"]),
-                "lawmaker_name": str(member["legislator_name"]),
-                "vote_position": str(member["vote_position"]),
-                "reason_summary": str(statement["reason_summary"]),
-                "evidence_text": str(statement["evidence_text"]),
-                "source_url": str(media["source_url"]),
-                "source_title": media.get("title"),
-                "source_start_seconds": start_seconds,
-                "source_end_seconds": end_seconds,
-                "statement_date": media.get("session_date"),
-                "source_kind": "public_floor_statement",
-                "review_status": "publishable",
-                "source_synced_at": iso_now(),
-            }
+            for statement in extracted:
+                member_match = _member_roll_call(bill_roll_calls, str(statement["lawmaker_name"]))
+                if member_match is None:
+                    continue
+                roll_call, member = member_match
+                evidence_location = _locate_evidence(
+                    segments,
+                    str(statement["evidence_text"]),
+                    hint=int(statement.get("start_seconds") or 0),
+                    start=int(section["start"]),
+                    end=int(section["end"]),
+                )
+                if evidence_location is None:
+                    continue
+                start_seconds, end_seconds = evidence_location
+                key = (bill_num, str(member["member_key"]))
+                results[key] = {
+                    "state": "wy",
+                    "year": int(media["year"]),
+                    "special_session_value": media.get("special_session_value"),
+                    "bill_num": bill_num,
+                    "roll_call_key": str(roll_call["roll_call_key"]),
+                    "member_key": str(member["member_key"]),
+                    "lawmaker_name": str(member["legislator_name"]),
+                    "vote_position": str(member["vote_position"]),
+                    "reason_summary": str(statement["reason_summary"]),
+                    "evidence_text": str(statement["evidence_text"]),
+                    "source_url": str(media["source_url"]),
+                    "source_title": media.get("title"),
+                    "source_start_seconds": start_seconds,
+                    "source_end_seconds": end_seconds,
+                    "statement_date": media.get("session_date"),
+                    "source_kind": "public_floor_statement",
+                    "review_status": "publishable",
+                    "source_synced_at": iso_now(),
+                }
     return list(results.values())
 
 
