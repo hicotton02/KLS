@@ -163,6 +163,7 @@ spec:
                       - key: kubernetes.io/hostname
                         operator: In
                         values:
+                          - gpu1
                           - worker1
                           - worker2
                           - worker3
