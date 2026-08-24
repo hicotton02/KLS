@@ -60,7 +60,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: sync
-              image: registry.skazproconsulting.com/keeping-law-simple/web:20260811-reasoning3@sha256:48c21a4759ba594b9489cd026893e4d910e8ba0be66a95d4f1e6da911ba6a86a
+              image: registry.skazproconsulting.com/keeping-law-simple/web:20260824-syncnet2@sha256:63bfb104a0589ca7d915d3849c62ea9a7cdd13c340dd9aeeb9fd7fec9252fe41
               imagePullPolicy: IfNotPresent
               command:
                 - sh
@@ -149,10 +149,24 @@ spec:
               emptyDir: {}
             - name: tmp
               emptyDir: {}
-          nodeSelector:
-            kubernetes.io/hostname: gpu2
-          tolerations:
-            - key: nvidia.com/gpu
-              operator: Equal
-              value: rtx5090-lab
-              effect: NoSchedule
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: kubernetes.io/hostname
+                        operator: In
+                        values:
+                          - worker1
+                          - worker2
+                          - worker3
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: keeping-law-simple
+                  app.kubernetes.io/component: sync
+              matchLabelKeys:
+                - batch.kubernetes.io/job-name

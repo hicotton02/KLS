@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -439,6 +441,11 @@ to_tsvector(
     COALESCE(interpretation_json, '')
 )
 """.strip()
+POSTGRES_SCHEMA_LOCK_ID = 4_956_083_267
+POSTGRES_SCHEMA_METADATA_NAME = "main"
+POSTGRES_CONNECT_MAX_ATTEMPTS = 6
+POSTGRES_CONNECT_BASE_DELAY_SECONDS = 0.5
+POSTGRES_CONNECT_MAX_DELAY_SECONDS = 5.0
 
 
 def normalize_special_session(value: int | None) -> int:
@@ -562,12 +569,38 @@ class PostgresConnection:
         self._connection.close()
 
 
+def _connect_postgres(
+    database_url: str,
+    *,
+    max_attempts: int = POSTGRES_CONNECT_MAX_ATTEMPTS,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> Any:
+    if psycopg is None or dict_row is None:
+        raise RuntimeError("KLS_DATABASE_URL is configured, but psycopg is not installed.")
+
+    attempts = max(1, int(max_attempts))
+    for attempt in range(attempts):
+        try:
+            return psycopg.connect(
+                database_url,
+                row_factory=dict_row,
+                connect_timeout=10,
+            )
+        except psycopg.OperationalError:
+            if attempt >= attempts - 1:
+                raise
+            delay = min(
+                POSTGRES_CONNECT_MAX_DELAY_SECONDS,
+                POSTGRES_CONNECT_BASE_DELAY_SECONDS * (2**attempt),
+            )
+            sleeper(delay)
+    raise RuntimeError("PostgreSQL connection retry loop ended without a connection.")
+
+
 def connect() -> sqlite3.Connection | PostgresConnection:
     settings = get_settings()
     if settings.database_url:
-        if psycopg is None or dict_row is None:
-            raise RuntimeError("KLS_DATABASE_URL is configured, but psycopg is not installed.")
-        return PostgresConnection(psycopg.connect(settings.database_url, row_factory=dict_row))
+        return PostgresConnection(_connect_postgres(settings.database_url))
     _ensure_parent_dir(settings.database_path)
     connection = sqlite3.connect(settings.database_path, timeout=60)
     connection.row_factory = sqlite3.Row
@@ -579,12 +612,66 @@ def connect() -> sqlite3.Connection | PostgresConnection:
 
 def init_db() -> None:
     with connect() as connection:
-        connection.executescript(SCHEMA)
-        _ensure_bill_columns(connection)
-        _ensure_bill_search_index(connection)
-        _ensure_page_view_columns(connection)
-        _ensure_sync_status_columns(connection)
+        if isinstance(connection, PostgresConnection):
+            _initialize_postgres_schema(connection)
+        else:
+            _apply_schema(connection)
         connection.commit()
+
+
+def _schema_revision() -> str:
+    payload = json.dumps(
+        {
+            "schema": SCHEMA,
+            "bill_columns": BILL_COLUMN_DEFINITIONS,
+            "page_view_columns": PAGE_VIEW_COLUMN_DEFINITIONS,
+            "sync_status_columns": SYNC_STATUS_COLUMN_DEFINITIONS,
+            "postgres_search_vector": POSTGRES_BILL_SEARCH_VECTOR_SQL,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _apply_schema(connection: sqlite3.Connection | PostgresConnection) -> None:
+    connection.executescript(SCHEMA)
+    _ensure_bill_columns(connection)
+    _ensure_bill_search_index(connection)
+    _ensure_page_view_columns(connection)
+    _ensure_sync_status_columns(connection)
+
+
+def _initialize_postgres_schema(connection: PostgresConnection) -> bool:
+    connection.execute("SELECT pg_advisory_xact_lock(?)", (POSTGRES_SCHEMA_LOCK_ID,))
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kls_schema_metadata (
+            name TEXT PRIMARY KEY,
+            revision TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    revision = _schema_revision()
+    current = connection.execute(
+        "SELECT revision FROM kls_schema_metadata WHERE name = ?",
+        (POSTGRES_SCHEMA_METADATA_NAME,),
+    ).fetchone()
+    if current and current.get("revision") == revision:
+        return False
+
+    _apply_schema(connection)
+    connection.execute(
+        """
+        INSERT INTO kls_schema_metadata (name, revision, applied_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT (name) DO UPDATE SET
+            revision = excluded.revision,
+            applied_at = excluded.applied_at
+        """,
+        (POSTGRES_SCHEMA_METADATA_NAME, revision, iso_now()),
+    )
+    return True
 
 
 def _ensure_bill_columns(connection: sqlite3.Connection) -> None:
@@ -2376,8 +2463,18 @@ def _ensure_legislator_vote_summaries(state: str) -> None:
             "SELECT source_marker FROM legislator_vote_summary_status WHERE state = ?",
             (state,),
         ).fetchone()
+        cache_state = connection.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM legislator_vote_summary_cache WHERE state = ?) AS cached_rows,
+                COALESCE((SELECT is_running FROM sync_status WHERE state = ?), 0) AS sync_running
+            """,
+            (state, state),
+        ).fetchone()
     status_values = dict(status) if status is not None else {}
-    if str(status_values.get("source_marker") or "") != source_marker:
+    cache_values = dict(cache_state) if cache_state is not None else {}
+    can_serve_completed_cache = bool(cache_values.get("cached_rows")) and bool(cache_values.get("sync_running"))
+    if str(status_values.get("source_marker") or "") != source_marker and not can_serve_completed_cache:
         refresh_legislator_vote_summaries(state)
 
 

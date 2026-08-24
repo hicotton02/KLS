@@ -1,13 +1,137 @@
+import app.db as db
 from app.db import (
+    POSTGRES_SCHEMA_METADATA_NAME,
+    StaticCursor,
+    _connect_postgres,
+    _initialize_postgres_schema,
+    _schema_revision,
     _sanitize_db_value,
     connect,
     get_jurisdiction_rollups,
     get_sync_status,
     init_db,
+    list_legislator_vote_summaries,
     list_recent_bills,
+    replace_bill_roll_calls,
     reset_stale_sync_statuses,
     update_sync_status,
 )
+
+
+class FakePostgresConnection:
+    def __init__(self, revision: str | None) -> None:
+        self.revision = revision
+        self.statements: list[str] = []
+        self.scripts: list[str] = []
+
+    def execute(self, sql: str, params: object = None) -> StaticCursor:
+        self.statements.append(sql)
+        if "SELECT revision FROM kls_schema_metadata" in sql:
+            rows = [{"revision": self.revision}] if self.revision else []
+            return StaticCursor(rows)
+        return StaticCursor([])
+
+    def executescript(self, script: str) -> None:
+        self.scripts.append(script)
+
+
+def test_postgres_connect_retries_transient_operational_errors(monkeypatch) -> None:
+    class OperationalError(Exception):
+        pass
+
+    class FakePsycopg:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def connect(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls < 3:
+                raise OperationalError("temporary DNS failure")
+            return "connected"
+
+    FakePsycopg.OperationalError = OperationalError
+    fake_psycopg = FakePsycopg()
+    monkeypatch.setattr(db, "psycopg", fake_psycopg)
+    monkeypatch.setattr(db, "dict_row", object())
+    sleeps: list[float] = []
+
+    connection = _connect_postgres("postgresql://example", max_attempts=3, sleeper=sleeps.append)
+
+    assert connection == "connected"
+    assert fake_psycopg.calls == 3
+    assert sleeps == [0.5, 1.0]
+
+
+def test_postgres_schema_gate_skips_repeated_ddl() -> None:
+    connection = FakePostgresConnection(_schema_revision())
+
+    changed = _initialize_postgres_schema(connection)  # type: ignore[arg-type]
+
+    assert changed is False
+    assert connection.scripts == []
+
+
+def test_postgres_schema_gate_records_new_revision() -> None:
+    connection = FakePostgresConnection("old-revision")
+
+    changed = _initialize_postgres_schema(connection)  # type: ignore[arg-type]
+
+    assert changed is True
+    assert len(connection.scripts) == 1
+    assert any("INSERT INTO kls_schema_metadata" in statement for statement in connection.statements)
+    assert POSTGRES_SCHEMA_METADATA_NAME == "main"
+
+
+def test_legislator_summary_serves_completed_cache_while_sync_is_running() -> None:
+    init_db()
+    timestamp = "2026-08-24T12:00:00+00:00"
+
+    def add_vote(bill_num: str, vote_id: str) -> None:
+        replace_bill_roll_calls(
+            "wy",
+            2026,
+            bill_num,
+            payloads=[
+                {
+                    "roll_call_key": f"h-{vote_id}",
+                    "vote_id": vote_id,
+                    "chamber": "H",
+                    "vote_date": timestamp,
+                    "vote_type": "F",
+                    "action": "H 3rd Reading:Passed",
+                    "amendment_number": None,
+                    "yes_count": 1,
+                    "no_count": 0,
+                    "absent_count": 0,
+                    "conflict_count": 0,
+                    "excused_count": 0,
+                    "members": [
+                        {
+                            "member_key": "wy-1",
+                            "source_legislator_id": "1",
+                            "legislator_name": "Test Member",
+                            "vote_label": "Member",
+                            "party": "I",
+                            "district": "H01",
+                            "vote_position": "yes",
+                        }
+                    ],
+                    "source_synced_at": timestamp,
+                    "created_at": timestamp,
+                    "updated_at": f"{timestamp}:{vote_id}",
+                }
+            ],
+        )
+
+    add_vote("HB1", "1")
+    assert list_legislator_vote_summaries("wy")[0]["total_votes"] == 1
+
+    update_sync_status("wy", is_running=True)
+    add_vote("HB2", "2")
+    assert list_legislator_vote_summaries("wy")[0]["total_votes"] == 1
+
+    update_sync_status("wy", is_running=False)
+    assert list_legislator_vote_summaries("wy")[0]["total_votes"] == 2
 
 
 def test_sanitize_db_value_removes_nul_bytes_recursively() -> None:

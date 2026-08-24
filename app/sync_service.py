@@ -25,6 +25,7 @@ from app.db import (
     list_years,
     mark_bill_vote_data_synced,
     normalize_special_session,
+    refresh_legislator_vote_summaries,
     replace_bill_amendments,
     replace_bill_roll_calls,
     reset_stale_sync_statuses,
@@ -446,6 +447,7 @@ def sync_wyoming(
                 except Exception as exc:  # noqa: BLE001
                     stats.relationship_failed += 1
                     log(f"Relationship analysis skipped for {year}: {exc}")
+        refresh_legislator_vote_summaries("wy")
     except Exception as exc:  # noqa: BLE001
         fatal_error = str(exc)
         raise
@@ -556,6 +558,7 @@ def sync_wyoming_votes(
 
             if remaining == 0:
                 break
+        refresh_legislator_vote_summaries("wy")
     finally:
         api.close()
 
