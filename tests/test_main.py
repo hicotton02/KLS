@@ -813,6 +813,7 @@ def test_related_relationships_are_collapsed_per_peer_bill() -> None:
     )
 
     assert len(collapsed) == 1
+    assert collapsed[0]["peer"]["year"] == 2026
     assert collapsed[0]["peer"]["bill_num"] == "HB0009"
     assert collapsed[0]["peer_href"] == "/states/wyoming/bills/2026/HB0009"
     assert collapsed[0]["relationship_strength"] == "high"
@@ -834,6 +835,50 @@ def test_related_relationships_are_collapsed_per_peer_bill() -> None:
         "HB0009 adds penalties for violations.",
         "HB0009 lets the state enforce those rules with penalties.",
     ]
+
+
+def test_bill_detail_api_includes_related_bill_year_and_link() -> None:
+    init_db()
+    _seed_state_bill("SF0007", "Clinic reporting rules.", year=2096)
+    _seed_state_bill("SF0008", "Clinic enforcement penalties.", year=2096)
+    replace_bill_relationships(
+        "wy",
+        2096,
+        [
+            {
+                "state": "wy",
+                "year": 2096,
+                "special_session_value_a": None,
+                "bill_num_a": "SF0007",
+                "special_session_value_b": None,
+                "bill_num_b": "SF0008",
+                "relationship_type": "complementary",
+                "relationship_strength": "high",
+                "confidence_score": 0.84,
+                "candidate_score": 9.2,
+                "needs_human_review": False,
+                "pair_summary": "Both bills deal with clinic rules.",
+                "combined_effect": "Together they change clinic reporting and enforcement.",
+                "why_review": "They address the same rules.",
+                "bill_a_evidence_json": ["SF0007 changes reporting."],
+                "bill_b_evidence_json": ["SF0008 changes enforcement."],
+                "limits_and_unknowns_json": [],
+                "heuristic_reasons_json": ["Shared issue tags: healthcare"],
+                "analysis_version": 1,
+                "source_synced_at": "2096-01-11T00:00:00+00:00",
+                "created_at": "2096-01-11T00:00:00+00:00",
+                "updated_at": "2096-01-11T00:00:00+00:00",
+            }
+        ],
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/v1/areas/wyoming/bills/2096/SF0007")
+
+    assert response.status_code == 200
+    peer = response.json()["relationships"][0]["peer"]
+    assert peer["year"] == 2096
+    assert peer["legacy_href"] == "/states/wyoming/bills/2096/SF0008"
 
 
 def test_bill_detail_shows_tags_and_amendments() -> None:

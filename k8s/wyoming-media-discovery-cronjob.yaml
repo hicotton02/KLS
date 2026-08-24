@@ -33,7 +33,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: worker
-              image: registry.skazproconsulting.com/keeping-law-simple/web:20260824-syncnet2@sha256:63bfb104a0589ca7d915d3849c62ea9a7cdd13c340dd9aeeb9fd7fec9252fe41
+              image: registry.skazproconsulting.com/keeping-law-simple/web:20260824-billdetail1@sha256:cdc2036da0484a1bdcc1eb245a21eacacf10b76c1708819c2abab6babc2de685
               imagePullPolicy: IfNotPresent
               command:
                 - python

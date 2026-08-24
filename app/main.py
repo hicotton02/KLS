@@ -1087,7 +1087,7 @@ def _collapse_related_relationships(
     collapsed: dict[tuple[str, int], dict[str, object]] = {}
 
     for relationship in relationships:
-        peer = relationship_peer(relationship, bill_num, special_session)
+        peer = {**relationship_peer(relationship, bill_num, special_session), "year": year}
         peer_bill_num = str(peer.get("bill_num") or "").strip()
         if not peer_bill_num:
             continue
