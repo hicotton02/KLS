@@ -22,8 +22,14 @@ spec:
       parallelism: 32
       completionMode: Indexed
       activeDeadlineSeconds: 82800
-      backoffLimitPerIndex: 1
+      backoffLimitPerIndex: 3
       maxFailedIndexes: 52
+      podFailurePolicy:
+        rules:
+          - action: Ignore
+            onPodConditions:
+              - type: DisruptionTarget
+                status: "True"
       template:
         metadata:
           labels:
