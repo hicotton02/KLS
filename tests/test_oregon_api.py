@@ -34,8 +34,14 @@ def test_fetch_year_bills_reads_oregon_grouped_measure_list() -> None:
     </li>
     """
 
+    list_calls = 0
+
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal list_calls
         if request.url.path == "/liz/2025R1/Measures/list":
+            list_calls += 1
+            if list_calls == 1:
+                return httpx.Response(503, headers={"retry-after": "0"}, request=request)
             return httpx.Response(200, text=list_html, request=request)
         if request.url.path == "/liz/2025R1/Measures/MeasureGroupedListing":
             if request.url.params.get("prefix") == "HB":
@@ -58,6 +64,7 @@ def test_fetch_year_bills_reads_oregon_grouped_measure_list() -> None:
     assert [item["billNum"] for item in items] == ["HB2001", "SB18"]
     assert items[0]["catchTitle"] == "Creates a water task force."
     assert items[1]["detailPath"] == "https://olis.oregonlegislature.gov/liz/2025R1/Measures/Overview/SB18"
+    assert list_calls == 2
 
 
 def test_fetch_bill_detail_extracts_oregon_measure_metadata() -> None:

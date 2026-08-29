@@ -82,6 +82,13 @@ def get_with_retries(client: Any, url: str, **kwargs: Any) -> Any:
     return request_with_retries(client, "GET", url, **kwargs)
 
 
+def get_source_with_retries(client: Any, url: str, **kwargs: Any) -> Any:
+    kwargs.setdefault("max_attempts", 8)
+    kwargs.setdefault("base_delay_seconds", 5.0)
+    kwargs.setdefault("max_delay_seconds", 120.0)
+    return get_with_retries(client, url, **kwargs)
+
+
 def post_with_retries(client: Any, url: str, **kwargs: Any) -> Any:
     return request_with_retries(client, "POST", url, **kwargs)
 

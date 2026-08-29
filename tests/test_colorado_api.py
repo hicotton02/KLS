@@ -34,7 +34,13 @@ def test_fetch_year_bills_reads_all_pages() -> None:
         """,
     }
 
+    calls = 0
+
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, headers={"retry-after": "0"}, request=request)
         page = request.url.params.get("page", "1")
         body = responses.get(page, "<html><body></body></html>")
         return httpx.Response(200, text=body, request=request)
@@ -52,6 +58,7 @@ def test_fetch_year_bills_reads_all_pages() -> None:
 
     assert [item["billNum"] for item in items] == ["HB25-1001", "HB25-1002"]
     assert items[1]["catchTitle"] == "Second bill"
+    assert calls == 3
 
 
 def test_fetch_year_bills_deduplicates_duplicate_bill_rows() -> None:

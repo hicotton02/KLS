@@ -12,7 +12,13 @@ def test_fetch_year_bills_reads_bill_table() -> None:
     api = AlaskaApiClient(settings)
     api.client.close()
 
+    calls = 0
+
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, headers={"retry-after": "0"}, request=request)
         return httpx.Response(
             200,
             text="""
@@ -54,6 +60,7 @@ def test_fetch_year_bills_reads_bill_table() -> None:
 
     assert [item["billNum"] for item in items] == ["HB1", "SB2"]
     assert items[0]["lastActionDate"] == "2025-05-18"
+    assert calls == 2
 
 
 def test_fetch_bill_detail_deduplicates_repeated_amendment_numbers() -> None:

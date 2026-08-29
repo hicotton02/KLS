@@ -8,6 +8,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from app.http_documents import absolute_url
+from app.http_retry import get_source_with_retries
 from app.settings import Settings
 
 
@@ -43,7 +44,8 @@ class ColoradoApiClient:
         session_label = f"{year} Regular Session"
         items: list[dict[str, Any]] = []
         seen_bill_nums: set[str] = set()
-        first_response = self.client.get(
+        first_response = get_source_with_retries(
+            self.client,
             "/bills/bill-search",
             params=[
                 ("sessions[]", session_label),
@@ -56,14 +58,19 @@ class ColoradoApiClient:
         total_pages = self._page_count(first_response.text)
 
         for page in range(1, total_pages + 1):
-            response = first_response if page == 1 else self.client.get(
-                "/bills/bill-search",
-                params=[
-                    ("sessions[]", session_label),
-                    ("measures[]", "Bill"),
-                    ("sort", "Bill # Ascending"),
-                    ("page", str(page)),
-                ],
+            response = (
+                first_response
+                if page == 1
+                else get_source_with_retries(
+                    self.client,
+                    "/bills/bill-search",
+                    params=[
+                        ("sessions[]", session_label),
+                        ("measures[]", "Bill"),
+                        ("sort", "Bill # Ascending"),
+                        ("page", str(page)),
+                    ],
+                )
             )
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
@@ -111,7 +118,7 @@ class ColoradoApiClient:
         return items
 
     def fetch_bill_detail(self, detail_path: str) -> dict[str, Any]:
-        response = self.client.get(detail_path)
+        response = get_source_with_retries(self.client, detail_path)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 

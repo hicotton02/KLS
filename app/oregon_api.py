@@ -10,6 +10,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from app.http_documents import absolute_url, fetch_document_text
+from app.http_retry import get_source_with_retries
 from app.settings import Settings
 from app.text_utils import clean_text
 
@@ -78,7 +79,7 @@ class OregonApiClient:
 
     def fetch_year_bills(self, year: int) -> list[dict[str, Any]]:
         session_key = self._session_key(year)
-        response = self.client.get(f"/liz/{session_key}/Measures/list")
+        response = get_source_with_retries(self.client, f"/liz/{session_key}/Measures/list")
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -91,7 +92,7 @@ class OregonApiClient:
         items: list[dict[str, Any]] = []
         seen: set[str] = set()
         for group_path in group_paths:
-            group_response = self.client.get(group_path)
+            group_response = get_source_with_retries(self.client, group_path)
             group_response.raise_for_status()
             group_soup = BeautifulSoup(group_response.text, "html.parser")
 
@@ -125,18 +126,24 @@ class OregonApiClient:
         return sorted(items, key=lambda item: _sort_bill_key(str(item["billNum"])))
 
     def fetch_bill_detail(self, detail_path: str, item: dict[str, Any] | None = None) -> dict[str, Any]:
-        response = self.client.get(detail_path)
+        response = get_source_with_retries(self.client, detail_path)
         response.raise_for_status()
 
         bill_num, session_key, year = self._measure_identifiers(str(response.url), item)
         sponsor_state = self._extract_assignment(response.text, "var Srv =")
         measure = self._extract_assignment(response.text, "Srv.Measure =")
 
-        history_response = self.client.get(f"/liz/{session_key}/Measures/Overview/GetHistory/{bill_num}")
+        history_response = get_source_with_retries(
+            self.client,
+            f"/liz/{session_key}/Measures/Overview/GetHistory/{bill_num}",
+        )
         history_response.raise_for_status()
         history_actions = self._history_actions(history_response.text, year)
 
-        version_response = self.client.get(f"/liz/{session_key}/Measures/MeasureVersionList/{bill_num}?showAnnotationLinks=False")
+        version_response = get_source_with_retries(
+            self.client,
+            f"/liz/{session_key}/Measures/MeasureVersionList/{bill_num}?showAnnotationLinks=False",
+        )
         version_response.raise_for_status()
         version_rows = self._version_rows(version_response.text)
 

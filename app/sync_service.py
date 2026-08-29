@@ -172,6 +172,7 @@ class SyncProgressTracker:
     started_at: str
     source_total: int | None = None
     stored_total: int | None = None
+    last_failure_message: str | None = None
 
     def start(self) -> None:
         update_sync_status(
@@ -210,6 +211,7 @@ class SyncProgressTracker:
         self._write(current_year=year, current_bill_num=bill_num, last_message=message)
 
     def note_failed(self, bill_num: str, year: int, error: str) -> None:
+        self.last_failure_message = f"{bill_num} ({year}): {error[:180]}"
         self._write(
             current_year=year,
             current_bill_num=bill_num,
@@ -268,6 +270,10 @@ class SyncProgressTracker:
             f"Last run checked {self.stats.seen} bills, updated {self.stats.updated}, "
             f"and skipped {self.stats.skipped} unchanged bills."
         )
+        if self.stats.failed:
+            message += f" {self.stats.failed} bill refreshes failed."
+            if self.last_failure_message:
+                message += f" Last problem: {self.last_failure_message}"
         if self.source_total is None or self.stored_total is None:
             return message
         return f"{message} {self._coverage_summary()}"

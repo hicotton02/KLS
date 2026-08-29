@@ -4,6 +4,8 @@ import app.sync_service as sync_service
 from app.db import connect, get_bill
 from app.sync_service import (
     FACT_CHECK_VERSION,
+    SyncProgressTracker,
+    SyncStats,
     _compute_source_hash,
     _fallback_interpretation,
     _interpretation_for_sync,
@@ -12,6 +14,24 @@ from app.sync_service import (
     _reusable_interpretation,
     repair_missing_interpretations,
 )
+
+
+def test_sync_progress_keeps_last_failure_in_finished_message(monkeypatch) -> None:
+    writes: list[dict[str, object]] = []
+    monkeypatch.setattr(sync_service, "update_sync_status", lambda _state, **payload: writes.append(payload))
+    stats = SyncStats(years=[2026], seen=2, skipped=1, failed=1)
+    progress = SyncProgressTracker("ak", [2026], stats, "2026-08-29T08:15:00+00:00")
+    progress.source_total = 2
+    progress.stored_total = 2
+
+    progress.note_failed("HB2", 2026, "429 Too Many Requests")
+    progress.finish()
+
+    assert writes[-1]["last_message"] == (
+        "Last run checked 2 bills, updated 0, and skipped 1 unchanged bills. "
+        "1 bill refreshes failed. Last problem: HB2 (2026): 429 Too Many Requests "
+        "Stored all 2 official bills."
+    )
 
 
 def test_needs_refresh_when_fact_check_version_is_missing() -> None:

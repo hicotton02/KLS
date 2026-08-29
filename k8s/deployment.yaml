@@ -47,7 +47,7 @@ spec:
                 - ALL
       containers:
         - name: web
-          image: registry.skazproconsulting.com/keeping-law-simple/web:20260824-billdetail1@sha256:cdc2036da0484a1bdcc1eb245a21eacacf10b76c1708819c2abab6babc2de685
+          image: registry.skazproconsulting.com/keeping-law-simple/web:20260829-sourceretry2@sha256:442060954287de5ab745225957403ed80a13f82e3cad2fc662ad7ff28b39bf7f
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000

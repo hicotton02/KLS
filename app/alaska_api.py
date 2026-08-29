@@ -7,6 +7,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from app.http_documents import absolute_url, fetch_document_text
+from app.http_retry import get_source_with_retries
 from app.settings import Settings
 
 
@@ -46,7 +47,8 @@ class AlaskaApiClient:
 
     def fetch_year_bills(self, year: int) -> list[dict[str, Any]]:
         legislature = alaska_legislature_for_year(year)
-        response = self.client.get(
+        response = get_source_with_retries(
+            self.client,
             f"/basis/Bill/Range/{legislature}",
             params={"bill1": "", "bill2": ""},
         )
@@ -80,7 +82,7 @@ class AlaskaApiClient:
         return items
 
     def fetch_bill_detail(self, detail_path: str) -> dict[str, Any]:
-        response = self.client.get(detail_path)
+        response = get_source_with_retries(self.client, detail_path)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
