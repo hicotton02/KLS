@@ -63,6 +63,12 @@ BOT_PATTERN = re.compile(
     r"(bot|crawl|spider|slurp|fetch|headless|preview|monitor|scan|python-requests|curl|wget|go-http-client)",
     re.IGNORECASE,
 )
+AUTOMATION_PATTERN = re.compile(
+    r"(lightpanda|playwright|puppeteer|selenium|phantomjs|chrome-lighthouse|pagespeed|scrapy|httpx|"
+    r"claude-user|chatgpt-user|perplexity-user|meta-externalagent)",
+    re.IGNORECASE,
+)
+BROWSER_PATTERN = re.compile(r"(mozilla/5\.0|chrome/|chromium/|firefox/|safari/|edg/)", re.IGNORECASE)
 TRACKING_SKIP_PREFIXES = ("/static/", "/admin/analytics")
 TRACKING_SKIP_PATHS = {
     "/favicon.ico",
@@ -136,8 +142,27 @@ def record_request_metrics(method: str, route_label: str, status_code: int, dura
     REQUEST_DURATION_SECONDS.labels(method=method_label, route=route_label).observe(duration_seconds)
 
 
+def bot_reason_for_request(request: Request) -> str | None:
+    user_agent = request.headers.get("user-agent", "").strip()
+    if not user_agent:
+        return "missing_user_agent"
+    if BOT_PATTERN.search(user_agent):
+        return "declared_bot"
+    if AUTOMATION_PATTERN.search(user_agent):
+        return "automation_user_agent"
+    if BROWSER_PATTERN.search(user_agent):
+        has_language = bool(request.headers.get("accept-language", "").strip())
+        has_fetch_metadata = any(
+            request.headers.get(header, "").strip()
+            for header in ("sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest")
+        )
+        if not has_language and not has_fetch_metadata:
+            return "missing_browser_headers"
+    return None
+
+
 def detect_bot(user_agent: str) -> bool:
-    return bool(BOT_PATTERN.search(user_agent or ""))
+    return bool(BOT_PATTERN.search(user_agent or "") or AUTOMATION_PATTERN.search(user_agent or ""))
 
 
 def referrer_domain(value: str | None) -> str | None:
@@ -294,7 +319,8 @@ def track_page_view(
     user_agent = request.headers.get("user-agent", "").strip()
     client_ip = extract_client_ip(request)
     country_code, country_name, region_code, region_name, city_name, latitude, longitude = resolver.lookup_location(client_ip)
-    bot = detect_bot(user_agent)
+    bot_reason = getattr(request.state, "bot_reason", None) or bot_reason_for_request(request)
+    bot = bool(bot_reason)
     traffic_type = "bot" if bot else "human"
     country_code_label = (country_code or "ZZ").strip().upper() or "ZZ"
     region_code_label = (region_code or "").strip().upper() or None
@@ -321,6 +347,7 @@ def track_page_view(
             "longitude": longitude,
             "visitor_hash": anonymize_visitor(client_ip, user_agent, settings.analytics_hmac_secret),
             "is_bot": bot,
+            "bot_reason": bot_reason,
             "user_agent": user_agent,
         }
     )

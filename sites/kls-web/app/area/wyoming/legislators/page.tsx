@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowLeft, ChevronRight, Search, Users } from "lucide-react";
 import { notFound } from "next/navigation";
@@ -7,6 +8,19 @@ type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 function first(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
+}
+
+export async function generateMetadata({ searchParams }: { searchParams: SearchParams }): Promise<Metadata> {
+  const params = await searchParams;
+  const filtered = Boolean(first(params.q)?.trim() || first(params.year));
+  const description = "Search official Wyoming House and Senate roll-call voting records by legislator.";
+  return {
+    title: "Wyoming Legislator Voting Records",
+    description,
+    alternates: { canonical: "/area/wyoming/legislators" },
+    robots: { index: !filtered, follow: true },
+    openGraph: { url: "/area/wyoming/legislators", title: "Wyoming Legislator Voting Records", description },
+  };
 }
 
 export default async function WyomingLegislatorsPage({ searchParams }: { searchParams: SearchParams }) {

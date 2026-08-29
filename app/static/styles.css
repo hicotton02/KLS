@@ -819,3 +819,8 @@ body.environment-qa .document-text {
     flex: 1 1 100%;
   }
 }
+.message-cell {
+  max-width: 42rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

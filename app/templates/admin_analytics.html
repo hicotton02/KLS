@@ -2,6 +2,7 @@
 
 {% block content %}
 <a class="back-link" href="/">Back to home</a>
+<a class="back-link" href="/admin/messages">Open site messages</a>
 
 <section class="hero-card">
   <div>
@@ -45,6 +46,25 @@
       <strong>{{ analytics.windows["30d"].total_views }}</strong>
     </article>
   </div>
+</section>
+
+<section class="panel">
+  <h2>Automated Traffic Removed</h2>
+  <p class="cell-note">These requests are kept in the count for troubleshooting, but they are not counted as readers.</p>
+  {% if analytics.bot_reasons %}
+  <div class="table-wrap">
+    <table class="bill-table compact-table">
+      <thead><tr><th>Reason</th><th>Requests</th></tr></thead>
+      <tbody>
+        {% for row in analytics.bot_reasons %}
+        <tr><td>{{ row.reason|replace("_", " ")|title }}</td><td>{{ row.hits }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="cell-note">No automated traffic has been classified in this period.</p>
+  {% endif %}
 </section>
 
 <section class="detail-grid admin-analytics-grid">

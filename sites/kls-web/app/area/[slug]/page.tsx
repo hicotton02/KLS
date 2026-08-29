@@ -1,8 +1,11 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { Clock3, ExternalLink, Filter, MessageSquareQuote, Users } from "lucide-react";
 import { notFound } from "next/navigation";
+import { cache } from "react";
 import { BillList } from "../../components/BillList";
 import { getArea, lastScannedLabel } from "../../lib/kls";
+import { absoluteUrl, areaHref, billPageHref, jsonLd, SITE_NAME } from "../../lib/site";
 
 type RouteParams = Promise<{ slug: string }>;
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
@@ -11,7 +14,11 @@ function first(value: string | string[] | undefined, fallback = "") {
   return Array.isArray(value) ? value[0] ?? fallback : value ?? fallback;
 }
 
-export default async function AreaPage({ params, searchParams }: { params: RouteParams; searchParams: SearchParams }) {
+const loadArea = cache((slug: string, year: string, q: string, status: string, tag: string) =>
+  getArea(slug, { year, q, status, tag }),
+);
+
+async function routeData(params: RouteParams, searchParams: SearchParams) {
   const { slug } = await params;
   const query = await searchParams;
   const filters = {
@@ -20,11 +27,61 @@ export default async function AreaPage({ params, searchParams }: { params: Route
     status: first(query.status, "all"),
     tag: first(query.tag),
   };
-  const data = await getArea(slug, filters);
+  return { slug, filters, data: await loadArea(slug, filters.year, filters.q, filters.status, filters.tag) };
+}
+
+export async function generateMetadata({ params, searchParams }: { params: RouteParams; searchParams: SearchParams }): Promise<Metadata> {
+  const { slug, filters, data } = await routeData(params, searchParams);
+  if (!data) return { title: "Coverage Area Not Found", robots: { index: false, follow: false } };
+
+  const latestYear = data.available_years.length ? Math.max(...data.available_years) : null;
+  const canonicalYear = data.selected_year && data.selected_year !== latestYear ? data.selected_year : null;
+  const canonical = areaHref(slug, canonicalYear);
+  const filtered = Boolean(filters.q.trim() || filters.tag || filters.status !== "all");
+  const yearLabel = data.selected_year ? ` (${data.selected_year})` : "";
+  const areaLabel = data.jurisdiction.kind === "federal" ? "Federal Bills" : `${data.jurisdiction.name} Bills`;
+  const title = `${areaLabel} in Plain English${yearLabel}`;
+  const description = `Track ${data.jurisdiction.name} legislation${data.selected_year ? ` for ${data.selected_year}` : ""} with official sources, current status, and neutral plain-English summaries.`;
+
+  return {
+    title,
+    description,
+    alternates: { canonical },
+    robots: { index: !filtered, follow: true },
+    openGraph: { type: "website", url: canonical, title: `${title} | ${SITE_NAME}`, description },
+  };
+}
+
+export default async function AreaPage({ params, searchParams }: { params: RouteParams; searchParams: SearchParams }) {
+  const { slug, filters, data } = await routeData(params, searchParams);
   if (!data) notFound();
+
+  const latestYear = data.available_years.length ? Math.max(...data.available_years) : null;
+  const canonicalYear = data.selected_year && data.selected_year !== latestYear ? data.selected_year : null;
+  const canonical = absoluteUrl(areaHref(slug, canonicalYear));
+  const itemList = data.bills.slice(0, 20).map((bill, index) => ({
+    "@type": "ListItem",
+    position: index + 1,
+    name: `${bill.bill_num} ${bill.plain_language_title || bill.catch_title || ""}`.trim(),
+    url: absoluteUrl(billPageHref(bill.area_slug, bill.year, bill.bill_num, bill.special_session)),
+  }));
 
   return (
     <main className="page-width page-main">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: jsonLd({
+            "@context": "https://schema.org",
+            "@type": "CollectionPage",
+            name: `${data.jurisdiction.name} bills${data.selected_year ? ` for ${data.selected_year}` : ""}`,
+            url: canonical,
+            inLanguage: "en-US",
+            isPartOf: { "@type": "WebSite", name: SITE_NAME, url: absoluteUrl("/") },
+            mainEntity: { "@type": "ItemList", numberOfItems: data.bills.length, itemListElement: itemList },
+          }),
+        }}
+      />
       <nav className="breadcrumbs" aria-label="Breadcrumb"><Link href="/">Coverage</Link><span>/</span><span>{data.jurisdiction.name}</span></nav>
 
       <section className="area-header">

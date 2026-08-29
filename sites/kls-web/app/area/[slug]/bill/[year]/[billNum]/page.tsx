@@ -1,13 +1,45 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { AlertTriangle, ArrowLeft, CalendarDays, CheckCircle2, ChevronDown, Clock3, ExternalLink, FileText, MessageSquareQuote, PlayCircle, SearchX, Vote } from "lucide-react";
 import { notFound } from "next/navigation";
+import { cache } from "react";
 import { formatBillDate, formatScanTimestamp, getBillDetail, type Interpretation } from "../../../../../lib/kls";
+import { absoluteUrl, areaHref, billPageHref, jsonLd, SITE_NAME } from "../../../../../lib/site";
 
 type RouteParams = Promise<{ slug: string; year: string; billNum: string }>;
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 function first(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
+}
+
+const loadBill = cache((slug: string, year: string, billNum: string, specialSession?: string) =>
+  getBillDetail(slug, year, billNum, specialSession),
+);
+
+async function routeData(params: RouteParams, searchParams: SearchParams) {
+  const { slug, year, billNum } = await params;
+  const query = await searchParams;
+  const specialSession = first(query.special_session);
+  return { slug, year, billNum, specialSession, data: await loadBill(slug, year, billNum, specialSession) };
+}
+
+export async function generateMetadata({ params, searchParams }: { params: RouteParams; searchParams: SearchParams }): Promise<Metadata> {
+  const { slug, year, billNum, specialSession, data } = await routeData(params, searchParams);
+  if (!data) return { title: "Bill Not Found", robots: { index: false, follow: false } };
+
+  const plainTitle = data.interpretation.plain_language_title || data.bill.catch_title || data.bill.bill_title || "Bill record";
+  const summary = data.interpretation.one_sentence_summary || data.bill.summary || `Official status, source text, and a plain-English summary for ${data.jurisdiction.name} bill ${data.bill.bill_num}.`;
+  const title = `${data.bill.bill_num}: ${plainTitle}`;
+  const canonical = billPageHref(slug, year, billNum, specialSession);
+
+  return {
+    title,
+    description: summary,
+    alternates: { canonical },
+    robots: { index: true, follow: true },
+    openGraph: { type: "article", url: canonical, title: `${title} | ${SITE_NAME}`, description: summary },
+  };
 }
 
 function items(value: string[] | undefined) {
@@ -27,9 +59,7 @@ const voteLabels = {
 } as const;
 
 export default async function BillPage({ params, searchParams }: { params: RouteParams; searchParams: SearchParams }) {
-  const { slug, year, billNum } = await params;
-  const query = await searchParams;
-  const data = await getBillDetail(slug, year, billNum, first(query.special_session));
+  const { slug, year, billNum, specialSession, data } = await routeData(params, searchParams);
   if (!data) notFound();
 
   const interpretation = data.interpretation;
@@ -43,10 +73,30 @@ export default async function BillPage({ params, searchParams }: { params: Route
     summary: "Official summary",
     current_version: "Current bill text",
   };
+  const canonical = absoluteUrl(billPageHref(slug, year, billNum, specialSession));
+  const description = interpretation.one_sentence_summary || data.bill.summary || `Official record for ${data.bill.bill_num}.`;
+  const officialPage = data.official_links.official_page;
+  const legislation = {
+    "@context": "https://schema.org",
+    "@type": "Legislation",
+    name: `${data.bill.bill_num} ${interpretation.plain_language_title || data.bill.catch_title || ""}`.trim(),
+    description,
+    url: canonical,
+    inLanguage: "en-US",
+    legislationIdentifier: data.bill.bill_num,
+    jurisdiction: data.jurisdiction.name,
+    publisher: {
+      "@type": "Organization",
+      name: data.jurisdiction.source_name,
+      url: data.jurisdiction.source_url,
+    },
+    ...(officialPage ? { sameAs: officialPage } : {}),
+  };
 
   return (
     <main className="page-width page-main bill-page">
-      <Link className="back-link" href={`/area/${slug}`}><ArrowLeft size={17} aria-hidden="true" /> Back to {data.jurisdiction.name}</Link>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLd(legislation) }} />
+      <Link className="back-link" href={areaHref(slug)}><ArrowLeft size={17} aria-hidden="true" /> Back to {data.jurisdiction.name}</Link>
 
       <header className="bill-header">
         <div>
@@ -107,7 +157,6 @@ export default async function BillPage({ params, searchParams }: { params: Route
         <div className="section-heading"><div><p className="eyebrow">Official record</p><h2 id="sources-title">Sources</h2></div><span className="trust-note"><CheckCircle2 size={17} aria-hidden="true" /> {interpretation.fact_check_status === "validated" ? "Validated" : "Source attached"}</span></div>
         <div className="source-grid">
           {sourceLinks.map(([key, url]) => <a href={url} target="_blank" rel="noreferrer" key={key}><FileText size={19} aria-hidden="true" /><span>{linkLabels[key] ?? key}</span><ExternalLink size={15} aria-hidden="true" /></a>)}
-          <a href={`https://www.keepinglawsimple.org${data.bill.legacy_href}`} target="_blank" rel="noreferrer"><FileText size={19} aria-hidden="true" /><span>Stored full record</span><ExternalLink size={15} aria-hidden="true" /></a>
         </div>
         {data.bill.official_summary_text ? <div className="official-text"><h3>Official summary</h3><p>{data.bill.official_summary_text}</p></div> : null}
       </section>
@@ -218,7 +267,7 @@ export default async function BillPage({ params, searchParams }: { params: Route
       {data.relationships.length ? (
         <section className="content-section" aria-labelledby="related-title">
           <div className="section-heading"><div><p className="eyebrow">Read together</p><h2 id="related-title">Related bills</h2></div></div>
-          <div className="related-list">{data.relationships.map((relationship) => <article key={relationship.peer.bill_num}><Link href={`/area/${slug}/bill/${relationship.peer.year}/${encodeURIComponent(relationship.peer.bill_num)}`}>{relationship.peer.bill_num}</Link><strong>{relationship.peer.plain_language_title || relationship.peer.catch_title}</strong>{relationship.pair_summaries?.[0] ? <p>{relationship.pair_summaries[0]}</p> : null}</article>)}</div>
+          <div className="related-list">{data.relationships.map((relationship) => <article key={relationship.peer.bill_num}><Link href={billPageHref(slug, relationship.peer.year, relationship.peer.bill_num, relationship.peer.special_session)}>{relationship.peer.bill_num}</Link><strong>{relationship.peer.plain_language_title || relationship.peer.catch_title}</strong>{relationship.pair_summaries?.[0] ? <p>{relationship.pair_summaries[0]}</p> : null}</article>)}</div>
         </section>
       ) : null}
 

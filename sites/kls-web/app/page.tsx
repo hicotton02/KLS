@@ -1,9 +1,22 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight, Clock3, Landmark, ShieldCheck } from "lucide-react";
 import { BillList } from "./components/BillList";
 import { SearchBox } from "./components/SearchBox";
 import { StateDirectory } from "./components/StateDirectory";
 import { formatScanTimestamp, getOverview, lastScannedLabel } from "./lib/kls";
+import { absoluteUrl, jsonLd, SITE_DESCRIPTION, SITE_NAME } from "./lib/site";
+
+export const metadata: Metadata = {
+  title: "Bills in Plain English",
+  description: SITE_DESCRIPTION,
+  alternates: { canonical: "/" },
+  openGraph: {
+    url: "/",
+    title: `${SITE_NAME}: Bills in Plain English`,
+    description: SITE_DESCRIPTION,
+  },
+};
 
 export default async function Home() {
   const overview = await getOverview();
@@ -17,6 +30,33 @@ export default async function Home() {
 
   return (
     <main>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: jsonLd({
+            "@context": "https://schema.org",
+            "@graph": [
+              {
+                "@type": "Organization",
+                name: SITE_NAME,
+                url: absoluteUrl("/"),
+              },
+              {
+                "@type": "WebSite",
+                name: SITE_NAME,
+                url: absoluteUrl("/"),
+                description: SITE_DESCRIPTION,
+                inLanguage: "en-US",
+                potentialAction: {
+                  "@type": "SearchAction",
+                  target: `${absoluteUrl("/search")}?q={search_term_string}`,
+                  "query-input": "required name=search_term_string",
+                },
+              },
+            ],
+          }),
+        }}
+      />
       <section className="intro-band">
         <div className="page-width intro-layout">
           <div className="intro-copy">

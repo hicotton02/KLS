@@ -344,8 +344,26 @@ CREATE TABLE IF NOT EXISTS page_views (
     longitude REAL,
     visitor_hash TEXT,
     is_bot INTEGER NOT NULL DEFAULT 0,
+    bot_reason TEXT,
     user_agent TEXT
 );
+
+CREATE TABLE IF NOT EXISTS site_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    submitted_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    name TEXT,
+    email TEXT,
+    message TEXT NOT NULL,
+    page_url TEXT,
+    visitor_hash TEXT,
+    status TEXT NOT NULL DEFAULT 'new',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_site_messages_submitted_at ON site_messages(submitted_at);
+CREATE INDEX IF NOT EXISTS idx_site_messages_status ON site_messages(status, submitted_at);
+CREATE INDEX IF NOT EXISTS idx_site_messages_visitor_hash ON site_messages(visitor_hash, submitted_at);
 
 CREATE TABLE IF NOT EXISTS sync_status (
     state TEXT PRIMARY KEY,
@@ -400,6 +418,7 @@ PAGE_VIEW_COLUMN_DEFINITIONS = {
     "city_name": "TEXT",
     "latitude": "REAL",
     "longitude": "REAL",
+    "bot_reason": "TEXT",
 }
 BILL_LIST_COLUMNS = [
     "state",
@@ -702,6 +721,8 @@ def _ensure_page_view_columns(connection: sqlite3.Connection) -> None:
     connection.execute("CREATE INDEX IF NOT EXISTS idx_page_views_region_code ON page_views(region_code, occurred_at)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_page_views_city_name ON page_views(city_name, occurred_at)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_page_views_referrer_domain ON page_views(referrer_domain, occurred_at)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_page_views_visitor_hash ON page_views(visitor_hash, occurred_at)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_page_views_bot_reason ON page_views(bot_reason, occurred_at)")
 
 
 def _ensure_sync_status_columns(connection: sqlite3.Connection) -> None:
@@ -3058,6 +3079,7 @@ def record_page_view(payload: dict[str, Any]) -> None:
         "longitude",
         "visitor_hash",
         "is_bot",
+        "bot_reason",
         "user_agent",
     ]
     serializable = {
@@ -3078,6 +3100,7 @@ def record_page_view(payload: dict[str, Any]) -> None:
         "longitude": float(payload["longitude"]) if payload.get("longitude") is not None else None,
         "visitor_hash": str(payload.get("visitor_hash") or "") or None,
         "is_bot": 1 if payload.get("is_bot") else 0,
+        "bot_reason": str(payload.get("bot_reason") or "")[:80] or None,
         "user_agent": str(payload.get("user_agent") or "")[:300] or None,
     }
     placeholders = ", ".join(f":{column}" for column in columns)
@@ -3094,6 +3117,61 @@ def cleanup_page_views(retention_cutoff: str) -> int:
         cursor = connection.execute("DELETE FROM page_views WHERE occurred_at < ?", (retention_cutoff,))
         connection.commit()
     return int(cursor.rowcount or 0)
+
+
+def create_site_message(payload: dict[str, Any]) -> int:
+    submitted_at = str(payload.get("submitted_at") or iso_now())
+    values = {
+        "submitted_at": submitted_at,
+        "kind": str(payload.get("kind") or "general")[:40],
+        "name": str(payload.get("name") or "")[:120] or None,
+        "email": str(payload.get("email") or "")[:254] or None,
+        "message": str(payload.get("message") or "")[:5000],
+        "page_url": str(payload.get("page_url") or "")[:500] or None,
+        "visitor_hash": str(payload.get("visitor_hash") or "")[:80] or None,
+        "status": "new",
+        "created_at": submitted_at,
+    }
+    with connect() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO site_messages (
+                submitted_at, kind, name, email, message, page_url, visitor_hash, status, created_at
+            ) VALUES (
+                :submitted_at, :kind, :name, :email, :message, :page_url, :visitor_hash, :status, :created_at
+            )
+            RETURNING id
+            """,
+            values,
+        )
+        row = cursor.fetchone()
+        connection.commit()
+    return int(row["id"] if row else 0)
+
+
+def count_recent_site_messages(visitor_hash: str | None, since: str) -> int:
+    if not visitor_hash:
+        return 0
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) AS total FROM site_messages WHERE visitor_hash = ? AND submitted_at >= ?",
+            (visitor_hash, since),
+        ).fetchone()
+    return int(row["total"] if row else 0)
+
+
+def list_site_messages(limit: int = 100) -> list[dict[str, Any]]:
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, submitted_at, kind, name, email, message, page_url, status
+            FROM site_messages
+            ORDER BY submitted_at DESC, id DESC
+            LIMIT ?
+            """,
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_analytics_overview(
@@ -3180,6 +3258,19 @@ def get_analytics_overview(
         """
         top_referrers = connection.execute(top_referrers_sql, top_referrers_params).fetchall()
         summary["top_referrers"] = [dict(row) for row in top_referrers]
+
+        bot_reasons = connection.execute(
+            """
+            SELECT COALESCE(NULLIF(bot_reason, ''), 'Previously classified') AS reason, COUNT(*) AS hits
+            FROM page_views
+            WHERE occurred_at >= ? AND is_bot = 1
+            GROUP BY reason
+            ORDER BY hits DESC, reason ASC
+            LIMIT 12
+            """,
+            (since_30d,),
+        ).fetchall()
+        summary["bot_reasons"] = [dict(row) for row in bot_reasons]
 
         recent_visits = connection.execute(
             """

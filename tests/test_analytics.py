@@ -4,7 +4,9 @@ import base64
 from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
+from app.analytics import bot_reason_for_request
 from app.db import get_analytics_overview, init_db, record_page_view
 from app.main import app
 
@@ -12,6 +14,37 @@ from app.main import app
 def _basic_auth(username: str = "admin", password: str = "test-password") -> dict[str, str]:
     token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
     return {"Authorization": f"Basic {token}"}
+
+
+def _request(headers: dict[str, str]) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/",
+            "headers": [(key.lower().encode(), value.encode()) for key, value in headers.items()],
+            "client": ("203.0.113.10", 443),
+            "server": ("www.keepinglawsimple.org", 443),
+            "scheme": "https",
+            "query_string": b"",
+        }
+    )
+
+
+def test_bot_detection_catches_automation_and_spoofed_browsers() -> None:
+    assert bot_reason_for_request(_request({"user-agent": "Lightpanda/1.0"})) == "automation_user_agent"
+    assert bot_reason_for_request(_request({"user-agent": "Claude-User/1.0"})) == "automation_user_agent"
+    assert bot_reason_for_request(_request({"user-agent": "ChatGPT-User/1.0"})) == "automation_user_agent"
+    assert bot_reason_for_request(_request({"user-agent": "Mozilla/5.0 Chrome/145.0.0.0 Safari/537.36"})) == "missing_browser_headers"
+    assert bot_reason_for_request(
+        _request(
+            {
+                "user-agent": "Mozilla/5.0 Chrome/145.0.0.0 Safari/537.36",
+                "accept-language": "en-US,en;q=0.9",
+                "sec-fetch-mode": "navigate",
+            }
+        )
+    ) is None
 
 
 def test_security_headers_are_applied_on_html_pages() -> None:
@@ -129,6 +162,7 @@ def test_admin_analytics_shows_seeded_summary() -> None:
             "country_name": "United States",
             "visitor_hash": "bot-1",
             "is_bot": True,
+            "bot_reason": "declared_bot",
             "user_agent": "bingbot/2.0",
         }
     )
@@ -141,6 +175,7 @@ def test_admin_analytics_shows_seeded_summary() -> None:
     assert "google.com" in response.text
     assert "United States" in response.text
     assert "Canada" in response.text
+    assert "Declared Bot" in response.text
     assert "private, no-store" in response.headers["cache-control"]
 
 

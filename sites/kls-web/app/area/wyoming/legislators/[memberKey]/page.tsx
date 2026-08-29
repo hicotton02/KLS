@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -13,6 +14,7 @@ import {
   Vote,
 } from "lucide-react";
 import { notFound } from "next/navigation";
+import { cache } from "react";
 import {
   billHref,
   formatBillDate,
@@ -69,7 +71,7 @@ function partyLabel(value: string | null) {
   return value;
 }
 
-async function loadVotingRecord(memberKey: string, requestedYear: string | undefined) {
+const loadVotingRecord = cache(async (memberKey: string, requestedYear: string | undefined) => {
   if (requestedYear === "all") {
     return getLegislatorVotingRecord(memberKey);
   }
@@ -78,6 +80,30 @@ async function loadVotingRecord(memberKey: string, requestedYear: string | undef
   }
 
   return getLegislatorVotingRecord(memberKey, undefined, true);
+});
+
+export async function generateMetadata({
+  params,
+  searchParams,
+}: {
+  params: RouteParams;
+  searchParams: SearchParams;
+}): Promise<Metadata> {
+  const { memberKey } = await params;
+  const query = await searchParams;
+  const requestedYear = first(query.year);
+  const data = await loadVotingRecord(memberKey, requestedYear);
+  if (!data) return { title: "Legislator Not Found", robots: { index: false, follow: false } };
+
+  const canonical = `/area/wyoming/legislators/${encodeURIComponent(memberKey)}`;
+  const description = `See ${data.legislator.name}'s official Wyoming roll-call voting record and published reasons for votes when a source is available.`;
+  return {
+    title: `${data.legislator.name} Voting Record`,
+    description,
+    alternates: { canonical },
+    robots: { index: !requestedYear, follow: true },
+    openGraph: { url: canonical, title: `${data.legislator.name} Voting Record`, description },
+  };
 }
 
 export default async function LegislatorVotingRecordPage({

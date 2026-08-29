@@ -4,6 +4,7 @@ import base64
 import binascii
 import ipaddress
 import json
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,13 +19,18 @@ from fastapi.templating import Jinja2Templates
 
 from app.analytics import (
     GeoIPResolver,
+    anonymize_visitor,
+    bot_reason_for_request,
     cleanup_old_page_views,
+    extract_client_ip,
     metrics_response,
     record_request_metrics,
     route_label_for_path,
     track_page_view,
 )
 from app.db import (
+    count_recent_site_messages,
+    create_site_message,
     get_analytics_overview,
     get_bill,
     get_bills_by_keys,
@@ -45,6 +51,7 @@ from app.db import (
     list_legislator_vote_explanations,
     list_legislator_vote_summaries,
     list_recent_bills,
+    list_site_messages,
     list_sync_statuses,
     list_vote_explanation_bill_keys,
     list_years,
@@ -110,6 +117,8 @@ INTERNAL_SERVICE_HOSTS = {
 }
 INTERNAL_ALLOWED_HOST_SUFFIXES = (".svc", ".svc.cluster.local")
 SYNC_STALE_AFTER = timedelta(minutes=20)
+CONTACT_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+CONTACT_KINDS = {"general", "correction", "advertising"}
 
 
 @app.api_route("/favicon.ico", methods=["GET", "HEAD"], include_in_schema=False)
@@ -300,6 +309,15 @@ def _host_is_allowed(host: str) -> bool:
     if _is_private_or_loopback_host(host):
         return True
     return False
+
+
+def _public_frontend_redirect(request: Request, path: str) -> RedirectResponse | None:
+    if _normalized_host(request.headers.get("host")) != settings.canonical_host:
+        return None
+    target = path
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    return RedirectResponse(target, status_code=308)
 
 
 def _clip_text(value: str, limit: int = 160) -> str:
@@ -498,9 +516,7 @@ def _state_canonical_url(jurisdiction: Jurisdiction, selected_year: int | None, 
 
 
 def _bill_path(jurisdiction: Jurisdiction, year: int, bill_num: str) -> str:
-    if jurisdiction.kind == "federal":
-        return f"/federal/bills/{year}/{bill_num}"
-    return f"/states/{jurisdiction.slug}/bills/{year}/{bill_num}"
+    return f"/area/{jurisdiction.slug}/bill/{year}/{bill_num}"
 
 
 def _bill_query(bill: dict[str, object]) -> dict[str, object]:
@@ -671,6 +687,17 @@ def _build_admin_analytics_seo() -> dict[str, object]:
     }
 
 
+def _build_admin_messages_seo() -> dict[str, object]:
+    return {
+        "title": f"Site Messages | {settings.app_title}",
+        "description": "Protected contact, correction, and advertising messages.",
+        "canonical_url": _absolute_url("/admin/messages"),
+        "robots": NOINDEX_ROBOTS,
+        "og_type": "website",
+        "json_ld": [],
+    }
+
+
 def _build_bill_seo(
     jurisdiction: Jurisdiction,
     bill: dict[str, object],
@@ -751,7 +778,21 @@ def _latest_lastmod(values: list[str | None]) -> str | None:
 
 
 def _core_sitemap_entries() -> dict[str, str | None]:
-    return {_absolute_url("/"): None}
+    return {
+        _absolute_url(path): None
+        for path in (
+            "/",
+            "/about",
+            "/advertising",
+            "/contact",
+            "/corrections",
+            "/editorial-standards",
+            "/privacy",
+            "/terms",
+            "/area/wyoming/legislators",
+            "/area/wyoming/vote-explanations",
+        )
+    }
 
 
 def _jurisdiction_sitemap_entries(jurisdiction: Jurisdiction) -> dict[str, str | None]:
@@ -1279,6 +1320,7 @@ async def security_and_analytics_middleware(request: Request, call_next):  # typ
     started = perf_counter()
     path = request.url.path or "/"
     host = _normalized_host(request.headers.get("host"))
+    request.state.bot_reason = bot_reason_for_request(request)
     if host and not _host_is_allowed(host):
         response = PlainTextResponse("Invalid host header", status_code=400)
     elif settings.redirect_to_www and host == settings.redirect_from_host:
@@ -1347,6 +1389,57 @@ def api_overview() -> JSONResponse:
             "recent_bills": recent_bills,
         }
     )
+
+
+@app.post("/api/v1/contact", status_code=202)
+async def api_contact(request: Request) -> JSONResponse:
+    try:
+        content_length = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        content_length = 0
+    if content_length > 20_000:
+        raise HTTPException(status_code=413, detail="Message is too large")
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="A valid message is required") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="A valid message is required")
+
+    if str(payload.get("website") or "").strip() or request.state.bot_reason:
+        return JSONResponse({"status": "received"}, status_code=202)
+
+    kind = str(payload.get("kind") or "general").strip().lower()
+    name = " ".join(str(payload.get("name") or "").split()).strip()
+    email = str(payload.get("email") or "").strip().lower()
+    message = str(payload.get("message") or "").strip()
+    page_url = str(payload.get("page_url") or "").strip()
+    if kind not in CONTACT_KINDS:
+        raise HTTPException(status_code=400, detail="Choose a valid message type")
+    if len(name) > 120 or len(email) > 254 or len(page_url) > 500:
+        raise HTTPException(status_code=400, detail="One of the fields is too long")
+    if email and not CONTACT_EMAIL_PATTERN.fullmatch(email):
+        raise HTTPException(status_code=400, detail="Enter a valid email address")
+    if len(message) < 10 or len(message) > 5000:
+        raise HTTPException(status_code=400, detail="Message must be between 10 and 5,000 characters")
+
+    user_agent = request.headers.get("user-agent", "").strip()
+    visitor_hash = anonymize_visitor(extract_client_ip(request), user_agent, settings.analytics_hmac_secret)
+    since = (datetime.now(timezone.utc) - timedelta(hours=1)).replace(microsecond=0).isoformat()
+    if count_recent_site_messages(visitor_hash, since) >= 3:
+        raise HTTPException(status_code=429, detail="Please wait before sending another message")
+
+    message_id = create_site_message(
+        {
+            "kind": kind,
+            "name": name,
+            "email": email,
+            "message": message,
+            "page_url": page_url,
+            "visitor_hash": visitor_hash,
+        }
+    )
+    return JSONResponse({"status": "received", "id": message_id}, status_code=202)
 
 
 @app.get("/api/v1/areas/{area_slug}")
@@ -1769,6 +1862,9 @@ def state_page(
     jurisdiction = get_state_jurisdiction(state_slug)
     if jurisdiction is None:
         raise HTTPException(status_code=404, detail="State page not found")
+    redirect = _public_frontend_redirect(request, jurisdiction_href(jurisdiction))
+    if redirect is not None:
+        return redirect
     context = _state_page_context(request, jurisdiction, year, q, status, tag)
     context["seo"] = _build_state_seo(
         jurisdiction=jurisdiction,
@@ -1793,6 +1889,9 @@ def federal_page(
     jurisdiction = get_jurisdiction("federal")
     if jurisdiction is None:
         raise HTTPException(status_code=404, detail="Federal page not found")
+    redirect = _public_frontend_redirect(request, jurisdiction_href(jurisdiction))
+    if redirect is not None:
+        return redirect
     context = _state_page_context(request, jurisdiction, year, q, status, tag)
     context["seo"] = _build_state_seo(
         jurisdiction=jurisdiction,
@@ -1897,9 +1996,23 @@ def admin_analytics(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/admin/messages", response_class=HTMLResponse)
+def admin_messages(request: Request) -> HTMLResponse:
+    _require_admin(request)
+    return templates.TemplateResponse(
+        "admin_messages.html",
+        {
+            "request": request,
+            "app_title": settings.app_title,
+            "messages": list_site_messages(limit=200),
+            "seo": _build_admin_messages_seo(),
+        },
+    )
+
+
 @app.get("/bills/{year}/{bill_num}")
 def legacy_bill_detail_redirect(year: int, bill_num: str, special_session: int | None = Query(default=None)) -> RedirectResponse:
-    target = f"/states/wyoming/bills/{year}/{bill_num}"
+    target = f"/area/wyoming/bill/{year}/{bill_num}"
     if special_session is not None:
         target = f"{target}?special_session={special_session}"
     return RedirectResponse(target, status_code=307)
@@ -1916,6 +2029,9 @@ def state_bill_detail(
     jurisdiction = get_state_jurisdiction(state_slug)
     if jurisdiction is None:
         raise HTTPException(status_code=404, detail="State page not found")
+    redirect = _public_frontend_redirect(request, _bill_path(jurisdiction, year, bill_num))
+    if redirect is not None:
+        return redirect
     return _render_bill_detail(request, jurisdiction, year, bill_num, special_session=special_session)
 
 
@@ -1924,4 +2040,7 @@ def federal_bill_detail(request: Request, year: int, bill_num: str) -> HTMLRespo
     jurisdiction = get_jurisdiction("federal")
     if jurisdiction is None:
         raise HTTPException(status_code=404, detail="Federal page not found")
+    redirect = _public_frontend_redirect(request, _bill_path(jurisdiction, year, bill_num))
+    if redirect is not None:
+        return redirect
     return _render_bill_detail(request, jurisdiction, year, bill_num)

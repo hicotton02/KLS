@@ -23,13 +23,25 @@
   <link rel="icon" href="/static/favicon.svg?v={{ static_asset_version }}" type="image/svg+xml">
   <link rel="shortcut icon" href="/static/favicon.svg?v={{ static_asset_version }}" type="image/svg+xml">
   <link rel="stylesheet" href="/static/styles.css?v={{ static_asset_version }}">
-  {% if google_analytics_id %}
-  <script async src="https://www.googletagmanager.com/gtag/js?id={{ google_analytics_id }}"></script>
+  {% if google_analytics_id and not request.state.bot_reason %}
   <script>
-    window.dataLayer = window.dataLayer || [];
-    function gtag(){dataLayer.push(arguments);}
-    gtag('js', new Date());
-    gtag('config', '{{ google_analytics_id }}');
+    (() => {
+      if (window.localStorage.getItem('kls-analytics-consent') !== 'granted') return;
+      window.dataLayer = window.dataLayer || [];
+      window.gtag = window.gtag || function(){window.dataLayer.push(arguments);};
+      window.gtag('consent', 'default', {
+        analytics_storage: 'granted',
+        ad_storage: 'denied',
+        ad_user_data: 'denied',
+        ad_personalization: 'denied'
+      });
+      const script = document.createElement('script');
+      script.async = true;
+      script.src = 'https://www.googletagmanager.com/gtag/js?id={{ google_analytics_id }}';
+      document.head.appendChild(script);
+      window.gtag('js', new Date());
+      window.gtag('config', '{{ google_analytics_id }}');
+    })();
   </script>
   {% endif %}
   {% if seo and seo.json_ld %}

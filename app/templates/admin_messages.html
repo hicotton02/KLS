@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block content %}
+<a class="back-link" href="/admin/analytics">Back to analytics</a>
+
+<section class="hero-card">
+  <div>
+    <p class="eyebrow">Admin Messages</p>
+    <h1>Contact and correction inbox.</h1>
+    <p class="hero-copy">Messages submitted through the public site appear here. This page is private.</p>
+  </div>
+</section>
+
+<section class="panel">
+  {% if messages %}
+  <div class="table-wrap">
+    <table class="bill-table compact-table">
+      <thead><tr><th>When</th><th>Type</th><th>From</th><th>Message</th><th>Page</th></tr></thead>
+      <tbody>
+        {% for item in messages %}
+        <tr>
+          <td>{{ item.submitted_at|format_datetime }}</td>
+          <td>{{ item.kind|title }}</td>
+          <td>
+            {{ item.name or "Not provided" }}
+            {% if item.email %}<br><a href="mailto:{{ item.email }}">{{ item.email }}</a>{% endif %}
+          </td>
+          <td class="message-cell">{{ item.message }}</td>
+          <td>{% if item.page_url %}<a href="{{ item.page_url }}">Open page</a>{% else %}Not provided{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="cell-note">No messages have been submitted yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

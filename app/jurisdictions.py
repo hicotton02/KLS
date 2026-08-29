@@ -628,6 +628,4 @@ def get_jurisdiction_by_state_code(state_code: str | None) -> Jurisdiction | Non
 
 
 def jurisdiction_href(jurisdiction: Jurisdiction) -> str:
-    if jurisdiction.kind == "state":
-        return f"/states/{jurisdiction.slug}"
-    return "/federal"
+    return f"/area/{jurisdiction.slug}"

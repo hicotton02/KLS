@@ -1,3 +1,5 @@
+import { billPageHref } from "./site";
+
 export type Counts = {
   total: number;
   active: number;
@@ -445,8 +447,7 @@ export async function getLegislatorVotingRecord(
 }
 
 export function billHref(bill: BillSummary) {
-  const query = bill.special_session === null ? "" : `?special_session=${bill.special_session}`;
-  return `/area/${bill.area_slug}/bill/${bill.year}/${encodeURIComponent(bill.bill_num)}${query}`;
+  return billPageHref(bill.area_slug, bill.year, bill.bill_num, bill.special_session);
 }
 
 const JURISDICTION_TIME_ZONES: Record<string, string> = {

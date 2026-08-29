@@ -28,7 +28,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: site
-          image: registry.skazproconsulting.com/keeping-law-simple/site:20260811-health1@sha256:b576add065455599f8dfcb9a4c470e5d5063adaa6431cafaa66c9ea9a8f82140
+          image: registry.skazproconsulting.com/keeping-law-simple/site:20260829-adready1@sha256:1ddbbf569be16a06acf8452a3dcabee49f63c32c122b6012a5aadf804b0d2b8d
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000
@@ -36,6 +36,16 @@ spec:
           env:
             - name: KLS_API_BASE_URL
               value: http://keeping-law-simple-web.keeping-law-simple.svc.cluster.local
+            - name: KLS_PUBLIC_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: keeping-law-simple-config
+                  key: KLS_PUBLIC_BASE_URL
+            - name: KLS_GOOGLE_ANALYTICS_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: keeping-law-simple-config
+                  key: KLS_GOOGLE_ANALYTICS_ID
             - name: NODE_OPTIONS
               value: --max-old-space-size=512
           readinessProbe:

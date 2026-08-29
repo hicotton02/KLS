@@ -36,13 +36,17 @@ test("server-renders the KLS home page", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>Keeping Law Simple<\/title>/i);
+  assert.match(html, /<title>Bills in Plain English \| Keeping Law Simple<\/title>/i);
+  assert.match(html, /rel="canonical" href="https:\/\/www\.keepinglawsimple\.org\/"/i);
+  assert.match(html, /application\/ld\+json/);
   assert.match(html, /Bills, in plain English\./);
   assert.match(html, /Find your state/);
   assert.match(html, /Congress, without the fog\./);
   assert.match(html, /Last scanned|Not yet scanned/);
   assert.match(html, /action="\/search"/);
   assert.match(html, /Official sources\. Neutral summaries\./);
+  assert.match(html, /href="\/privacy"/);
+  assert.match(html, /href="\/advertising"/);
   assert.doesNotMatch(html, /codex-preview|taking shape|react-loading-skeleton/i);
 });
 
@@ -75,6 +79,8 @@ test("renders Wyoming scan and bill dates for regular people", async () => {
   assert.match(html, /Mar 9, 2026/);
   assert.match(html, /Jul 1, 2026/);
   assert.doesNotMatch(html, /\bUTC\b|2026-03-09T00:00:00/);
+  assert.match(html, /rel="canonical" href="https:\/\/www\.keepinglawsimple\.org\/area\/wyoming\/bill\/2026\/SF0001"/i);
+  assert.match(html, /"@type":"Legislation"/);
 });
 
 test("shows the latest scan without background sync details", async () => {
@@ -87,6 +93,28 @@ test("shows the latest scan without background sync details", async () => {
   const html = await response.text();
   assert.match(html, /Last scanned/);
   assert.doesNotMatch(html, /Background sync|\bUTC\b/);
+  assert.match(html, /rel="canonical" href="https:\/\/www\.keepinglawsimple\.org\/area\/wyoming"/i);
+  assert.match(html, /"@type":"CollectionPage"/);
+});
+
+test("renders trust, privacy, and contact pages", async () => {
+  const [about, advertising, privacy, contact, adsTxt] = await Promise.all([
+    render("/about", "https://www.keepinglawsimple.org"),
+    render("/advertising", "https://www.keepinglawsimple.org"),
+    render("/privacy", "https://www.keepinglawsimple.org"),
+    render("/contact?type=correction", "https://www.keepinglawsimple.org"),
+    render("/ads.txt", "https://www.keepinglawsimple.org"),
+  ]);
+
+  assert.equal(about.status, 200);
+  assert.match(await about.text(), /Law should not require a law degree/);
+  assert.equal(advertising.status, 200);
+  assert.match(await advertising.text(), /They do not buy coverage/);
+  assert.equal(privacy.status, 200);
+  assert.match(await privacy.text(), /Advertising cookies are currently disabled/);
+  assert.equal(contact.status, 200);
+  assert.match(await contact.text(), /Report a correction|Possible correction/);
+  assert.equal(adsTxt.status, 404);
 });
 
 test("keeps vote explanations scoped to Wyoming and out of primary navigation", async () => {
@@ -138,12 +166,13 @@ test("renders the simple legislator profile only under Wyoming", async () => {
 });
 
 test("contains product metadata and no starter or model details", async () => {
-  const [page, header, billPage, apiClient, layout, nextConfig, dockerfile, packageJson] = await Promise.all([
+  const [page, header, billPage, apiClient, layout, analyticsConsent, nextConfig, dockerfile, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/SiteHeader.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/area/[slug]/bill/[year]/[billNum]/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/kls.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/AnalyticsConsent.tsx", import.meta.url), "utf8"),
     readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../Dockerfile", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -161,6 +190,9 @@ test("contains product metadata and no starter or model details", async () => {
   assert.doesNotMatch(`${page}\n${billPage}\n${apiClient}`, /qwen|generator_model|interpretation_model/i);
   assert.match(apiClient, /wy: "America\/Denver"/);
   assert.match(layout, /Keeping Law Simple/);
+  assert.match(layout, /editorial-standards/);
+  assert.match(analyticsConsent, /kls-analytics-consent/);
+  assert.match(analyticsConsent, /ad_storage: "denied"/);
   assert.doesNotMatch(layout, /codex-preview|_sites-preview|Starter Project/i);
   assert.match(nextConfig, /output: "standalone"/);
   assert.match(dockerfile, /CMD \["node", "server\.js"\]/);

@@ -3,15 +3,23 @@ import Link from "next/link";
 import { ArrowLeft, CalendarDays, ChevronRight, FileCheck2, Filter, ShieldCheck } from "lucide-react";
 import { billHref, formatScanTimestamp, getVoteExplanations } from "../../../lib/kls";
 
-export const metadata: Metadata = {
-  title: "Why Wyoming Lawmakers Voted",
-  description: "Plain-language reasons Wyoming lawmakers gave for their votes, linked to public sources.",
-};
-
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 function first(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
+}
+
+export async function generateMetadata({ searchParams }: { searchParams: SearchParams }): Promise<Metadata> {
+  const query = await searchParams;
+  const selectedYear = first(query.year);
+  const description = "Plain-language reasons Wyoming lawmakers gave for their votes, linked to public statements and official records.";
+  return {
+    title: "Why Wyoming Lawmakers Voted",
+    description,
+    alternates: { canonical: "/area/wyoming/vote-explanations" },
+    robots: { index: !selectedYear, follow: true },
+    openGraph: { url: "/area/wyoming/vote-explanations", title: "Why Wyoming Lawmakers Voted", description },
+  };
 }
 
 export default async function WyomingVoteExplanationsPage({ searchParams }: { searchParams: SearchParams }) {

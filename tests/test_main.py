@@ -207,7 +207,8 @@ def test_home_lists_jurisdiction_pages() -> None:
     assert '<link rel="canonical" href="https://www.keepinglawsimple.org">' in response.text
     assert 'application/ld+json' in response.text
     assert 'https://www.googletagmanager.com/gtag/js?id=G-W6NEFX21NR' in response.text
-    assert "gtag('config', 'G-W6NEFX21NR');" in response.text
+    assert "kls-analytics-consent" in response.text
+    assert "window.gtag('config', 'G-W6NEFX21NR');" in response.text
 
     state_labels = [
         "Open Alabama",
@@ -547,7 +548,7 @@ def test_state_page_has_own_route() -> None:
     assert response.status_code == 200
     assert "plain English breakdown" in response.text
     assert "Bills Worth Reading Together" not in response.text
-    assert '<strong><a class="bill-link" href="/states/wyoming/bills/2099/SF0007">Clinic reporting rules.</a></strong>' in normalized
+    assert '<strong><a class="bill-link" href="/area/wyoming/bill/2099/SF0007">Clinic reporting rules.</a></strong>' in normalized
     assert 'index,follow,max-image-preview:large' in response.text
 
 
@@ -626,7 +627,7 @@ def test_filtered_state_page_is_noindex_with_clean_canonical() -> None:
 
     assert response.status_code == 200
     assert 'content="noindex,follow,max-image-preview:large"' in response.text
-    assert '<link rel="canonical" href="https://www.keepinglawsimple.org/states/wyoming">' in response.text
+    assert '<link rel="canonical" href="https://www.keepinglawsimple.org/area/wyoming">' in response.text
 
 
 def test_federal_page_exists() -> None:
@@ -663,7 +664,82 @@ def test_legacy_bill_url_redirects_to_state_route() -> None:
     response = client.get("/bills/2026/HB0001?special_session=0", follow_redirects=False)
 
     assert response.status_code == 307
-    assert response.headers["location"] == "/states/wyoming/bills/2026/HB0001?special_session=0"
+    assert response.headers["location"] == "/area/wyoming/bill/2026/HB0001?special_session=0"
+
+
+def test_public_legacy_pages_redirect_to_modern_canonical_routes() -> None:
+    init_db()
+    client = TestClient(app)
+
+    state = client.get(
+        "/states/wyoming?year=2025",
+        headers={"host": "www.keepinglawsimple.org"},
+        follow_redirects=False,
+    )
+    bill = client.get(
+        "/states/wyoming/bills/2025/HB0001?special_session=0",
+        headers={"host": "www.keepinglawsimple.org"},
+        follow_redirects=False,
+    )
+    federal = client.get(
+        "/federal",
+        headers={"host": "www.keepinglawsimple.org"},
+        follow_redirects=False,
+    )
+
+    assert state.status_code == 308
+    assert state.headers["location"] == "/area/wyoming?year=2025"
+    assert bill.status_code == 308
+    assert bill.headers["location"] == "/area/wyoming/bill/2025/HB0001?special_session=0"
+    assert federal.status_code == 308
+    assert federal.headers["location"] == "/area/federal"
+
+
+def test_contact_api_stores_messages_and_rate_limits_repeat_submissions() -> None:
+    init_db()
+    client = TestClient(app)
+    headers = {
+        "user-agent": "Mozilla/5.0 Chrome/145.0.0.0 Safari/537.36",
+        "accept-language": "en-US,en;q=0.9",
+        "sec-fetch-mode": "cors",
+        "x-real-ip": "8.8.8.8",
+    }
+    payload = {
+        "kind": "correction",
+        "name": "Casey Reader",
+        "email": "casey@example.com",
+        "message": "The action date on this bill may need another look.",
+        "page_url": "https://www.keepinglawsimple.org/area/wyoming/bill/2026/HB0001",
+        "website": "",
+    }
+
+    responses = [client.post("/api/v1/contact", json=payload, headers=headers) for _ in range(4)]
+
+    assert [response.status_code for response in responses] == [202, 202, 202, 429]
+    with connect() as connection:
+        rows = connection.execute("SELECT kind, name, email, message FROM site_messages ORDER BY id").fetchall()
+    assert len(rows) == 3
+    assert rows[0]["kind"] == "correction"
+    assert rows[0]["email"] == "casey@example.com"
+
+
+def test_contact_api_quietly_discards_honeypot_submissions() -> None:
+    init_db()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/contact",
+        json={
+            "kind": "general",
+            "message": "This automated message should not be saved.",
+            "website": "https://spam.example",
+        },
+    )
+
+    assert response.status_code == 202
+    with connect() as connection:
+        row = connection.execute("SELECT COUNT(*) AS total FROM site_messages").fetchone()
+    assert row["total"] == 0
 
 
 def test_robots_txt_points_to_sitemap() -> None:
@@ -737,8 +813,8 @@ def test_state_sitemap_lists_state_and_bill_pages() -> None:
 
     assert response.status_code == 200
     assert "<urlset" in response.text
-    assert "https://www.keepinglawsimple.org/states/wyoming" in response.text
-    assert "https://www.keepinglawsimple.org/states/wyoming/bills/2099/HB0001" in response.text
+    assert "https://www.keepinglawsimple.org/area/wyoming" in response.text
+    assert "https://www.keepinglawsimple.org/area/wyoming/bill/2099/HB0001" in response.text
 
 
 def test_federal_bill_page_has_own_route() -> None:
@@ -751,7 +827,7 @@ def test_federal_bill_page_has_own_route() -> None:
     assert response.status_code == 200
     assert "Sample federal bill" in response.text
     assert "Congress.gov bill page" in response.text
-    assert '<link rel="canonical" href="https://www.keepinglawsimple.org/federal/bills/119/HR1">' in response.text
+    assert '<link rel="canonical" href="https://www.keepinglawsimple.org/area/federal/bill/119/HR1">' in response.text
 
 
 def test_related_relationships_are_collapsed_per_peer_bill() -> None:
@@ -815,7 +891,7 @@ def test_related_relationships_are_collapsed_per_peer_bill() -> None:
     assert len(collapsed) == 1
     assert collapsed[0]["peer"]["year"] == 2026
     assert collapsed[0]["peer"]["bill_num"] == "HB0009"
-    assert collapsed[0]["peer_href"] == "/states/wyoming/bills/2026/HB0009"
+    assert collapsed[0]["peer_href"] == "/area/wyoming/bill/2026/HB0009"
     assert collapsed[0]["relationship_strength"] == "high"
     assert collapsed[0]["needs_human_review"] is True
     assert collapsed[0]["pair_summaries"] == [
@@ -878,7 +954,7 @@ def test_bill_detail_api_includes_related_bill_year_and_link() -> None:
     assert response.status_code == 200
     peer = response.json()["relationships"][0]["peer"]
     assert peer["year"] == 2096
-    assert peer["legacy_href"] == "/states/wyoming/bills/2096/SF0008"
+    assert peer["legacy_href"] == "/area/wyoming/bill/2096/SF0008"
 
 
 def test_bill_detail_shows_tags_and_amendments() -> None:

@@ -82,6 +82,48 @@ def test_postgres_schema_gate_records_new_revision() -> None:
     assert POSTGRES_SCHEMA_METADATA_NAME == "main"
 
 
+def test_init_db_adds_bot_reason_before_creating_its_index() -> None:
+    with connect() as connection:
+        connection.execute("DROP TABLE page_views")
+        connection.execute(
+            """
+            CREATE TABLE page_views (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                occurred_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                host TEXT NOT NULL,
+                path TEXT NOT NULL,
+                route_label TEXT NOT NULL,
+                method TEXT NOT NULL,
+                status_code INTEGER NOT NULL,
+                referrer_domain TEXT,
+                country_code TEXT,
+                country_name TEXT,
+                region_code TEXT,
+                region_name TEXT,
+                city_name TEXT,
+                latitude REAL,
+                longitude REAL,
+                visitor_hash TEXT,
+                is_bot INTEGER NOT NULL DEFAULT 0,
+                user_agent TEXT
+            )
+            """
+        )
+        connection.commit()
+
+    init_db()
+
+    with connect() as connection:
+        columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(page_views)").fetchall()}
+        indexes = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA index_list(page_views)").fetchall()
+        }
+    assert "bot_reason" in columns
+    assert "idx_page_views_bot_reason" in indexes
+
+
 def test_legislator_summary_serves_completed_cache_while_sync_is_running() -> None:
     init_db()
     timestamp = "2026-08-24T12:00:00+00:00"

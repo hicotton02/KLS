@@ -1,6 +1,20 @@
+import type { Metadata } from "next";
 import { Filter, Search } from "lucide-react";
 import { BillList } from "../components/BillList";
 import { getSearch } from "../lib/kls";
+import { SITE_NAME } from "../lib/site";
+
+export const metadata: Metadata = {
+  title: "Search Bills",
+  description: "Search bill numbers, topics, sponsors, official records, and plain-English summaries across Keeping Law Simple.",
+  alternates: { canonical: "/search" },
+  robots: { index: false, follow: true },
+  openGraph: {
+    url: "/search",
+    title: `Search Bills | ${SITE_NAME}`,
+    description: "Search official legislative records and plain-English summaries.",
+  },
+};
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
