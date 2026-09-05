@@ -497,6 +497,45 @@ def test_bill_scan_is_unavailable_when_all_recordings_are_terminal() -> None:
     ) == "source_unavailable"
 
 
+def test_bill_status_refresh_uses_grouped_explanation_counts(monkeypatch) -> None:
+    targets = [
+        {
+            "year": 2098,
+            "special_session_key": -1,
+            "special_session_value": None,
+            "bill_num": bill_num,
+            "session_date": "2098-03-06",
+            "chamber": "H",
+        }
+        for bill_num in ("SF0101", "HB0002")
+    ]
+    media = {
+        "id": 1,
+        "year": 2098,
+        "special_session_key": -1,
+        "session_date": "2098-03-06",
+        "chamber": "H",
+        "transcript_status": "available",
+        "explanation_scan_status": "complete",
+        "explanation_scanned_at": "2098-03-07T00:00:00+00:00",
+    }
+    stored_rows: list[dict[str, object]] = []
+    monkeypatch.setattr(explanations, "list_bill_roll_call_targets", lambda *_args: targets)
+    monkeypatch.setattr(explanations, "list_legislative_media", lambda *_args, **_kwargs: [media])
+    monkeypatch.setattr(
+        explanations,
+        "list_bill_vote_explanation_counts",
+        lambda *_args: {(2098, -1, "SF0101"): 2},
+    )
+    monkeypatch.setattr(explanations, "upsert_bill_vote_explanation_scans", stored_rows.extend)
+
+    assert explanations.refresh_bill_explanation_scans([2098]) == 2
+    assert {row["bill_num"]: row["explanation_count"] for row in stored_rows} == {
+        "SF0101": 2,
+        "HB0002": 0,
+    }
+
+
 def test_transcription_claims_are_distinct_and_stale_claims_recover() -> None:
     first_id = upsert_legislative_media(
         {

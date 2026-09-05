@@ -2311,6 +2311,30 @@ def count_bill_vote_explanations(
     return int(row["total"] or 0) if row is not None else 0
 
 
+def list_bill_vote_explanation_counts(
+    state: str,
+    years: Sequence[int],
+) -> dict[tuple[int, int, str], int]:
+    if not years:
+        return {}
+    params: list[Any] = [state, *(int(year) for year in years)]
+    with connect() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT year, special_session_key, bill_num, COUNT(*) AS total
+            FROM bill_vote_explanations
+            WHERE state = ? AND year IN ({', '.join('?' for _ in years)})
+              AND review_status IN ('publishable', 'curated')
+            GROUP BY year, special_session_key, bill_num
+            """,
+            params,
+        ).fetchall()
+    return {
+        (int(row["year"]), int(row["special_session_key"]), str(row["bill_num"])): int(row["total"] or 0)
+        for row in rows
+    }
+
+
 def _legislator_vote_source_marker(
     connection: sqlite3.Connection | PostgresConnection,
     state: str,

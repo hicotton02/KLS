@@ -20,9 +20,9 @@ from yt_dlp import YoutubeDL
 from app.db import (
     claim_legislative_media_explanation_scan,
     claim_legislative_media_transcription,
-    count_bill_vote_explanations,
     get_legislative_media,
     init_db,
+    list_bill_vote_explanation_counts,
     list_bill_roll_calls,
     list_bill_roll_call_targets,
     list_legislative_media,
@@ -1376,6 +1376,7 @@ def refresh_bill_explanation_scans(years: Iterable[int]) -> int:
     selected_years = sorted({int(year) for year in years}, reverse=True)
     targets = list_bill_roll_call_targets("wy", selected_years)
     media_items = list_legislative_media("wy", years=selected_years)
+    explanation_counts = list_bill_vote_explanation_counts("wy", selected_years)
     media_by_session: dict[tuple[int, int, str, str], list[dict[str, Any]]] = {}
     for media in media_items:
         key = (
@@ -1413,12 +1414,7 @@ def refresh_bill_explanation_scans(years: Iterable[int]) -> int:
         scanned = sum(item.get("explanation_scan_status") == "complete" for item in bill_media)
         status = _bill_explanation_scan_status(bill_media)
         scanned_at_values = [str(item.get("explanation_scanned_at")) for item in bill_media if item.get("explanation_scanned_at")]
-        explanation_count = count_bill_vote_explanations(
-            "wy",
-            year,
-            bill_num,
-            special_session_value=record.get("special_session_value"),
-        )
+        explanation_count = explanation_counts.get((year, _special_key, bill_num), 0)
         scan_rows.append(
             {
                 "state": "wy",
