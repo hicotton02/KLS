@@ -15,7 +15,7 @@ spec:
     spec:
       activeDeadlineSeconds: 10800
       backoffLimit: 24
-      completions: 96
+      completions: 4
       parallelism: 4
       ttlSecondsAfterFinished: 3600
       template:
@@ -45,7 +45,7 @@ spec:
                 - --stage
                 - transcribe
                 - --limit-media
-                - "1"
+                - "24"
               env:
                 - name: PGPASSWORD
                   valueFrom:

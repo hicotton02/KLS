@@ -221,6 +221,7 @@ class SyncProgressTracker:
     def finish(self, *, fatal_error: str | None = None) -> None:
         message = fatal_error[:180] if fatal_error else self._finished_message()
         finished_at = iso_now()
+        failed = max(1, self.stats.failed) if fatal_error else self.stats.failed
         payload = {
             "years_json": list(self.years),
             "is_running": False,
@@ -231,7 +232,7 @@ class SyncProgressTracker:
             "skipped": self.stats.skipped,
             "interpreted": self.stats.interpreted,
             "validated": self.stats.validated,
-            "failed": self.stats.failed,
+            "failed": failed,
             "source_total": self.source_total,
             "stored_total": self.stored_total,
             "last_message": message,

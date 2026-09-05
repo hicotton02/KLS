@@ -452,8 +452,49 @@ def test_invalid_media_source_url_fails_without_calling_transcription(monkeypatc
         SimpleNamespace(transcription_api_url="http://stt.example", local_transcription_model=""),
     )
 
-    assert result.status == "failed"
+    assert result.status == "source_unavailable"
     assert result.error == "The official recording source URL is invalid."
+
+
+def test_terminal_transcript_failure_leaves_the_retry_queue(monkeypatch) -> None:
+    media_id = upsert_legislative_media(
+        {
+            "state": "wy",
+            "year": 2098,
+            "session_date": "2098-03-06",
+            "chamber": "H",
+            "source_url": "https://www.youtube.com/watch?v=terminal-source",
+            "source_kind": "youtube",
+        }
+    )
+    monkeypatch.setattr(
+        explanations,
+        "fetch_media_transcript",
+        lambda *_args, **_kwargs: TranscriptResult(
+            status="failed",
+            error="ERROR: [youtube] This video is not available",
+        ),
+    )
+
+    assert transcribe_wyoming_media([2098], settings=get_settings(), limit=1) == (0, 0, 1)
+    assert get_legislative_media(media_id)["transcript_status"] == "source_unavailable"
+
+    with connect() as connection:
+        connection.execute(
+            "UPDATE legislative_media SET transcript_updated_at = ? WHERE id = ?",
+            ("2000-01-01T00:00:00+00:00", media_id),
+        )
+        connection.commit()
+    assert claim_legislative_media_transcription("wy", years=[2098], retry_after_seconds=1) is None
+
+
+def test_bill_scan_is_unavailable_when_all_recordings_are_terminal() -> None:
+    assert explanations._bill_explanation_scan_status(
+        [
+            {"transcript_status": "source_unavailable", "explanation_scan_status": "pending"},
+            {"transcript_status": "source_unavailable", "explanation_scan_status": "failed"},
+        ]
+    ) == "source_unavailable"
 
 
 def test_transcription_claims_are_distinct_and_stale_claims_recover() -> None:
@@ -731,7 +772,7 @@ def test_curated_example_uses_final_bill_vote_after_statement_date() -> None:
     assert {item["roll_call_key"] for item in explanations} == {"h-5520"}
 
 
-def test_explanations_are_stored_and_exposed_without_model_metadata() -> None:
+def test_explanations_are_stored_and_exposed_without_model_metadata(monkeypatch) -> None:
     _seed_bill_and_vote()
     media_id = upsert_legislative_media(
         {
@@ -801,11 +842,15 @@ def test_explanations_are_stored_and_exposed_without_model_metadata() -> None:
     stored_explanations = list_bill_vote_explanations("wy", 2098, "SF0101")
     stored_scan = get_bill_vote_explanation_scan("wy", 2098, "SF0101")
     response = TestClient(app).get("/api/v1/areas/wyoming/bills/2098/SF0101")
-    index_response = TestClient(app).get("/api/v1/areas/wyoming/vote-explanations", params={"year": 2098})
     profile_response = TestClient(app).get(
         "/api/v1/areas/wyoming/legislators/wy-101",
         params={"year": 2098},
     )
+    monkeypatch.setattr(
+        "app.main.get_bill",
+        lambda *_args, **_kwargs: pytest.fail("Vote explanation index must batch bill lookups"),
+    )
+    index_response = TestClient(app).get("/api/v1/areas/wyoming/vote-explanations", params={"year": 2098})
 
     assert stored_media[0]["transcript_json"][0]["start"] == 100
     assert stored_explanations[0]["lawmaker_name"] == "Pat Example"

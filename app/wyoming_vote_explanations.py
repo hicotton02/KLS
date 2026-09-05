@@ -79,6 +79,25 @@ class TranscriptResult:
     error: str | None = None
 
 
+TERMINAL_TRANSCRIPT_ERROR_MARKERS = (
+    "official recording source url is invalid",
+    "invalid data found when processing input",
+    "this video is not available",
+    "video unavailable",
+    "private video",
+    "sign in to confirm your age",
+    "returned no timestamped speech",
+    "chunk rejected",
+)
+
+
+def _with_terminal_transcript_status(result: TranscriptResult) -> TranscriptResult:
+    error = str(result.error or "").casefold()
+    if result.status == "failed" and any(marker in error for marker in TERMINAL_TRANSCRIPT_ERROR_MARKERS):
+        result.status = "source_unavailable"
+    return result
+
+
 class TranscriptionChunkQualityError(RuntimeError):
     def __init__(self, message: str, *, elapsed: float, diagnostics: dict[str, Any]) -> None:
         super().__init__(message)
@@ -782,7 +801,7 @@ def fetch_media_transcript(
         source_url = _normalize_media_source_url(media.get("source_url"))
         parsed_source = urlparse(source_url)
         if parsed_source.scheme.casefold() not in {"http", "https"} or not parsed_source.netloc:
-            return TranscriptResult(status="failed", error="The official recording source URL is invalid.")
+            return TranscriptResult(status="source_unavailable", error="The official recording source URL is invalid.")
         normalized_media = dict(media)
         normalized_media["source_url"] = source_url
         captions: TranscriptResult | None = None
@@ -817,15 +836,15 @@ def fetch_media_transcript(
             if captions.status == "available":
                 return captions
         if settings.transcription_api_url:
-            return _transcribe_with_api(normalized_media, settings, logger=logger)
+            return _with_terminal_transcript_status(_transcribe_with_api(normalized_media, settings, logger=logger))
         if settings.local_transcription_model:
-            return _transcribe_locally(normalized_media, settings)
+            return _with_terminal_transcript_status(_transcribe_locally(normalized_media, settings))
         return captions or TranscriptResult(
             status="needs_transcription",
             error="No transcription service is configured.",
         )
     except (httpx.HTTPError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
-        return TranscriptResult(status="failed", error=str(exc)[:1000])
+        return _with_terminal_transcript_status(TranscriptResult(status="failed", error=str(exc)[:1000]))
 
 
 def transcribe_wyoming_media(
@@ -883,7 +902,7 @@ def transcribe_wyoming_media(
     for media in selected_media():
         if logger and not selected_media_ids and not force:
             logger(f"Claimed media {media['id']} for transcription.")
-        result = fetch_media_transcript(media, config, logger=logger)
+        result = _with_terminal_transcript_status(fetch_media_transcript(media, config, logger=logger))
         update_legislative_media_transcript(
             int(media["id"]),
             status=result.status,
@@ -1337,6 +1356,22 @@ def scan_wyoming_media(
     return scanned, explanations
 
 
+def _bill_explanation_scan_status(bill_media: list[dict[str, Any]]) -> str:
+    if not bill_media:
+        return "source_unavailable"
+    if all(item.get("transcript_status") == "source_unavailable" for item in bill_media):
+        return "source_unavailable"
+    if all(item.get("explanation_scan_status") == "complete" for item in bill_media):
+        return "complete"
+    if any(item.get("explanation_scan_status") == "complete" for item in bill_media):
+        return "partial"
+    if any(item.get("transcript_status") == "available" for item in bill_media):
+        return "pending"
+    if any(item.get("transcript_status") == "needs_transcription" for item in bill_media):
+        return "needs_transcription"
+    return "pending"
+
+
 def refresh_bill_explanation_scans(years: Iterable[int]) -> int:
     selected_years = sorted({int(year) for year in years}, reverse=True)
     targets = list_bill_roll_call_targets("wy", selected_years)
@@ -1376,18 +1411,7 @@ def refresh_bill_explanation_scans(years: Iterable[int]) -> int:
         media_total = len(bill_media)
         transcribed = sum(item.get("transcript_status") == "available" for item in bill_media)
         scanned = sum(item.get("explanation_scan_status") == "complete" for item in bill_media)
-        if media_total == 0:
-            status = "source_unavailable"
-        elif scanned == media_total:
-            status = "complete"
-        elif scanned:
-            status = "partial"
-        elif transcribed:
-            status = "pending"
-        elif any(item.get("transcript_status") == "needs_transcription" for item in bill_media):
-            status = "needs_transcription"
-        else:
-            status = "pending"
+        status = _bill_explanation_scan_status(bill_media)
         scanned_at_values = [str(item.get("explanation_scanned_at")) for item in bill_media if item.get("explanation_scanned_at")]
         explanation_count = count_bill_vote_explanations(
             "wy",

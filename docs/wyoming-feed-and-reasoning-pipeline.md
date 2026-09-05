@@ -55,7 +55,7 @@ existing summaries and do not wait for summary generation.
 The recording pipeline is split into three bounded CronJobs:
 
 1. `keeping-law-simple-wyoming-media-discovery` catalogs recordings hourly.
-2. `keeping-law-simple-wyoming-transcriptions` keeps up to 24 lightweight producers active. Each producer claims one recording, submits up to six chunks concurrently through the durable STT queue, and is replaced until the job has attempted 96 recordings.
+2. `keeping-law-simple-wyoming-transcriptions` runs four lightweight producers. Each producer claims up to 24 recordings in sequence and submits up to six chunks concurrently through the durable STT queue, for a maximum of 96 recording attempts per run.
 3. `keeping-law-simple-wyoming-reasoning` runs four workers, each claiming up to two completed transcripts.
 
 Transcription and reason extraction claim work with conditional database
@@ -115,7 +115,7 @@ Caption downloads use bounded retries. A temporary caption error, including a
 publisher `429`, falls through to the configured transcription service instead
 of marking the recording permanently failed.
 
-The current statuses are `pending`, `transcribing`, `scanning`, `available`, `complete`, and `failed`. Failed transcription and reasoning rows become eligible again after a six-hour cooldown. Stale `transcribing` claims expire after three hours, and stale `scanning` claims expire after six hours. Timeouts and malformed extraction output therefore return to the queue without creating a tight retry loop.
+The current statuses are `pending`, `transcribing`, `scanning`, `available`, `complete`, `failed`, and `source_unavailable`. Temporary transcription and reasoning failures become eligible again after a six-hour cooldown. Confirmed missing, private, invalid, or unusable recordings are marked `source_unavailable` and leave the active queue. Stale `transcribing` claims expire after three hours, and stale `scanning` claims expire after six hours. Timeouts and malformed extraction output therefore return to the queue without creating a tight retry loop.
 
 Long transcription claims expire after three hours. Reason-extraction claims
 expire after six hours. Fresh and interactive workloads keep priority; KLS

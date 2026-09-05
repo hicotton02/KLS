@@ -1645,13 +1645,26 @@ def api_vote_explanations(
     overview = get_vote_explanation_overview("wy")
     available_years = list(overview.get("available_years") or [])
     selected_year = year if year is not None else (available_years[0] if available_years else None)
+    keys = list_vote_explanation_bill_keys("wy", year=selected_year, limit=limit)
+    bills_by_key = get_bills_by_keys(
+        "wy",
+        [
+            (
+                int(key["year"]),
+                str(key["bill_num"]),
+                key.get("special_session_value"),
+            )
+            for key in keys
+        ],
+    )
     bills = []
-    for key in list_vote_explanation_bill_keys("wy", year=selected_year, limit=limit):
-        bill = get_bill(
-            "wy",
-            int(key["year"]),
-            str(key["bill_num"]),
-            special_session_value=key.get("special_session_value"),
+    for key in keys:
+        bill = bills_by_key.get(
+            (
+                int(key["year"]),
+                normalize_special_session(key.get("special_session_value")),
+                str(key["bill_num"]),
+            )
         )
         if bill is None:
             continue

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import ssl
 from datetime import datetime
 from typing import Any
 
@@ -15,6 +16,12 @@ from app.text_utils import clean_text, html_to_text, pdf_bytes_to_text
 
 FLORIDA_BILL_LABEL_PATTERN = re.compile(r"^(?P<prefix>(?:[A-Z]+/)*[A-Z]+)\s+(?P<number>\d+)$")
 FLORIDA_BILL_HEADING_PATTERN = re.compile(r"^(?P<label>(?:[A-Z]+/)*[A-Z]+\s+\d+):\s*(?P<title>.+)$")
+
+
+def _florida_tls_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    context.maximum_version = ssl.TLSVersion.TLSv1_2
+    return context
 
 
 def parse_florida_date(value: str | None) -> str:
@@ -69,6 +76,7 @@ class FloridaApiClient:
             headers={"User-Agent": "keeping-law-simple/1.0"},
             timeout=self.settings.request_timeout_seconds,
             follow_redirects=True,
+            verify=_florida_tls_context(),
         )
         self._ranges_by_session: dict[str, list[str]] = {}
 

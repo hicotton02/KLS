@@ -5,8 +5,14 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from app.florida_api import FloridaApiClient, normalize_florida_bill_number
+from app.florida_api import FloridaApiClient, _florida_tls_context, normalize_florida_bill_number
 from app.settings import get_settings
+
+
+def test_florida_client_caps_tls_at_1_2() -> None:
+    import ssl
+
+    assert _florida_tls_context().maximum_version == ssl.TLSVersion.TLSv1_2
 
 
 def test_fetch_year_bills_reads_official_ranges_and_both_chambers() -> None:

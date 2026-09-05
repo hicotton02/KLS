@@ -34,6 +34,18 @@ def test_sync_progress_keeps_last_failure_in_finished_message(monkeypatch) -> No
     )
 
 
+def test_sync_progress_counts_a_fatal_source_failure(monkeypatch) -> None:
+    writes: list[dict[str, object]] = []
+    monkeypatch.setattr(sync_service, "update_sync_status", lambda _state, **payload: writes.append(payload))
+    progress = SyncProgressTracker("fl", [2026], SyncStats(years=[2026]), "2026-09-05T08:15:00+00:00")
+
+    progress.finish(fatal_error="Server disconnected without sending a response.")
+
+    assert writes[-1]["failed"] == 1
+    assert writes[-1]["last_message"] == "Server disconnected without sending a response."
+    assert "last_success_at" not in writes[-1]
+
+
 def test_needs_refresh_when_fact_check_version_is_missing() -> None:
     existing = {
         "has_interpretation": 1,
