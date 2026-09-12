@@ -10,6 +10,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from app.http_documents import absolute_url, fetch_document_text
+from app.http_retry import get_with_retries
 from app.settings import Settings
 from app.text_utils import clean_text, first_non_empty
 
@@ -91,7 +92,7 @@ class HawaiiApiClient:
         self.client.close()
 
     def fetch_year_bills(self, year: int) -> list[dict[str, Any]]:
-        response = self.client.get(HAWAII_BILLS_DIRECTORY_TEMPLATE.format(year=year))
+        response = get_with_retries(self.client, HAWAII_BILLS_DIRECTORY_TEMPLATE.format(year=year))
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -166,7 +167,7 @@ class HawaiiApiClient:
         return sorted(items_by_bill.values(), key=lambda item: _sort_bill_key(str(item["billNum"])))
 
     def fetch_bill_detail(self, detail_path: str, item: dict[str, Any] | None = None) -> dict[str, Any]:
-        response = self.client.get(detail_path)
+        response = get_with_retries(self.client, detail_path)
         response.raise_for_status()
         if "measurenotfound" in str(response.url).lower():
             raise ValueError(f"Hawaii measure was not found for {detail_path}")

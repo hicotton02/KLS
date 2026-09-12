@@ -9,6 +9,7 @@ import httpx
 from bs4 import BeautifulSoup, NavigableString, Tag
 
 from app.http_documents import absolute_url, fetch_document_text
+from app.http_retry import get_with_retries, post_with_retries
 from app.settings import Settings
 from app.text_utils import clean_text, html_to_text
 
@@ -81,7 +82,8 @@ class ConnecticutApiClient:
         items_by_bill: dict[str, dict[str, Any]] = {}
 
         for low, high in (("1", "4999"), ("5001", "9999")):
-            response = self.client.post(
+            response = post_with_retries(
+                self.client,
                 "/asp/CGABillInfo/CGABillInfoDisplay.asp",
                 data={
                     "cboSessYr": str(year),
@@ -97,7 +99,7 @@ class ConnecticutApiClient:
         return sorted(items_by_bill.values(), key=lambda item: _sort_bill_key(str(item["billNum"])))
 
     def fetch_bill_detail(self, detail_path: str) -> dict[str, Any]:
-        response = self.client.get(detail_path)
+        response = get_with_retries(self.client, detail_path)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 

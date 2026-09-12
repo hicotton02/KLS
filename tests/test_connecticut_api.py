@@ -71,6 +71,33 @@ def test_fetch_year_bills_parses_house_and_senate_ranges() -> None:
     assert items[2]["detailPath"].endswith("bill_num=SB00001&which_year=2026")
 
 
+def test_fetch_year_bills_retries_a_temporary_source_error() -> None:
+    settings = get_settings()
+    api = ConnecticutApiClient(settings)
+    api.close()
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(503, headers={"Retry-After": "0"}, request=request)
+        return httpx.Response(200, text="<html><body></body></html>", request=request)
+
+    api.client = httpx.Client(
+        base_url=settings.connecticut_site_base,
+        follow_redirects=True,
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        assert api.fetch_year_bills(2026) == []
+    finally:
+        api.close()
+
+    assert attempts == 3
+
+
 def test_fetch_bill_detail_reads_status_page_and_bill_history() -> None:
     settings = get_settings()
     api = ConnecticutApiClient(settings)
