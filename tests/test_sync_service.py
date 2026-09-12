@@ -46,6 +46,32 @@ def test_sync_progress_counts_a_fatal_source_failure(monkeypatch) -> None:
     assert "last_success_at" not in writes[-1]
 
 
+def test_sync_progress_batches_routine_status_writes(monkeypatch) -> None:
+    writes: list[dict[str, object]] = []
+    monkeypatch.setattr(sync_service, "update_sync_status", lambda _state, **payload: writes.append(payload))
+    stats = SyncStats(years=[2026])
+    progress = SyncProgressTracker("il", [2026], stats, "2026-09-12T08:15:00+00:00")
+
+    progress.start()
+    for index in range(49):
+        stats.seen += 1
+        stats.skipped += 1
+        progress.note_checked(f"HB{index + 1}", 2026, changed=False)
+
+    assert len(writes) == 1
+
+    stats.seen += 1
+    stats.skipped += 1
+    progress.note_checked("HB50", 2026, changed=False)
+    assert len(writes) == 2
+    assert writes[-1]["seen"] == 50
+    assert writes[-1]["current_bill_num"] == "HB50"
+
+    progress.finish()
+    assert len(writes) == 3
+    assert writes[-1]["seen"] == 50
+
+
 def test_needs_refresh_when_fact_check_version_is_missing() -> None:
     existing = {
         "has_interpretation": 1,

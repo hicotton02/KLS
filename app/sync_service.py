@@ -86,6 +86,7 @@ from app.voting import build_wyoming_roll_calls
 
 Logger = Callable[[str], None]
 FACT_CHECK_VERSION = 1
+SYNC_PROGRESS_WRITE_EVERY = 50
 
 
 @dataclass
@@ -173,6 +174,8 @@ class SyncProgressTracker:
     source_total: int | None = None
     stored_total: int | None = None
     last_failure_message: str | None = None
+    progress_write_every: int = SYNC_PROGRESS_WRITE_EVERY
+    _progress_notes: int = field(default=0, init=False, repr=False)
 
     def start(self) -> None:
         update_sync_status(
@@ -207,6 +210,9 @@ class SyncProgressTracker:
         )
 
     def note_checked(self, bill_num: str, year: int, *, changed: bool) -> None:
+        self._progress_notes += 1
+        if self._progress_notes % max(1, self.progress_write_every) != 0:
+            return
         message = f"Updated {bill_num} ({year})." if changed else f"Checked {bill_num} ({year}) with no source changes."
         self._write(current_year=year, current_bill_num=bill_num, last_message=message)
 
