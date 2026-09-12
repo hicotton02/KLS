@@ -17,6 +17,11 @@ def normalize_wyoming_media_url(source_url: object) -> str:
     if host not in {"wyoleg.gov", "www.wyoleg.gov"} or parsed.scheme not in {"http", "https"}:
         return value
     path = parsed.path
+    # Verified against the archive and each entry's session date and chamber.
+    path = {
+        "/2008/Audio/house/h030 am1.mp3": "/2008/Audio/house/h0303am1.mp3",
+        "/2015/Audio/senate/s0122pm.mp3": "/2015/Audio/senate/s0122pm1.mp3",
+    }.get(path, path)
     # The 2018 index includes its AudioMenu directory in recording links.
     path = re.sub(r"^/2018/Audio/AudioMenu/(house|senate)/", r"/2018/Audio/\1/", path)
     match = re.fullmatch(r"/2018/Audio/([hs]\d{6}(?:am|pm)\d+\.mp3)", path)

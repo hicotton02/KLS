@@ -23,6 +23,8 @@ def recording(url, **extra):
     ("http://wyoleg.gov/2018/Audio/AudioMenu/house/h021218am1.mp3", "https://wyoleg.gov/2018/Audio/house/h021218am1.mp3"),
     ("https://www.wyoleg.gov/2018/Audio/s021318am1.mp3", "https://wyoleg.gov/2018/Audio/senate/s021318am1.mp3"),
     ("http://wyoleg.gov/2018/Audio/h021318am1.mp3", "https://wyoleg.gov/2018/Audio/house/h021318am1.mp3"),
+    ("http://wyoleg.gov/2008/Audio/house/h030 am1.mp3", "https://wyoleg.gov/2008/Audio/house/h0303am1.mp3"),
+    ("http://wyoleg.gov/2015/Audio/senate/s0122pm.mp3", "https://wyoleg.gov/2015/Audio/senate/s0122pm1.mp3"),
     ("https://elsewhere.example/2018/Audio/AudioMenu/house/test.mp3", "https://elsewhere.example/2018/Audio/AudioMenu/house/test.mp3"),
     ("https://wyoleg.gov/2019/Audio/AudioMenu/house/test.mp3", "https://wyoleg.gov/2019/Audio/AudioMenu/house/test.mp3"),
 ])
