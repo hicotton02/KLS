@@ -1,9 +1,25 @@
 from __future__ import annotations
 
+import ssl
+
 import httpx
 
-from app.illinois_api import IllinoisApiClient
+from app.illinois_api import IllinoisApiClient, _IllinoisTlsAdapter
 from app.settings import get_settings
+
+
+def test_illinois_client_adds_missing_intermediate_without_disabling_tls() -> None:
+    settings = get_settings()
+    api = IllinoisApiClient(settings)
+
+    try:
+        adapter = api.client.get_adapter(f"{settings.illinois_site_base}/legislation")
+        assert isinstance(adapter, _IllinoisTlsAdapter)
+        assert adapter.ssl_context.verify_mode == ssl.CERT_REQUIRED
+        assert adapter.ssl_context.check_hostname is True
+        assert adapter.poolmanager.connection_pool_kw["ssl_context"] is adapter.ssl_context
+    finally:
+        api.close()
 
 
 def test_fetch_year_bills_reads_range_pages() -> None:

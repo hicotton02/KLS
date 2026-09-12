@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import html
 import re
+import ssl
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import requests
 from bs4 import BeautifulSoup, Tag
+from requests.adapters import HTTPAdapter
 
 from app.http_documents import absolute_url, fetch_document_text
 from app.http_retry import get_with_retries
@@ -31,6 +34,35 @@ ILLINOIS_AMENDMENT_LABEL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ILLINOIS_SUPPORTED_DOC_TYPES = {"HB", "SB", "HR", "SR", "HJR", "SJR", "HJRCA", "SJRCA"}
+ILLINOIS_INTERMEDIATE_CA = (
+    Path(__file__).with_name("certs") / "sectigo_public_server_authentication_ca_ov_r40.pem"
+)
+
+
+def _illinois_ssl_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=str(ILLINOIS_INTERMEDIATE_CA))
+    return context
+
+
+class _IllinoisTlsAdapter(HTTPAdapter):
+    def __init__(self, context: ssl.SSLContext):
+        self.ssl_context = context
+        super().__init__()
+
+    def init_poolmanager(
+        self,
+        connections: int,
+        maxsize: int,
+        block: bool = False,
+        **pool_kwargs: Any,
+    ) -> None:
+        pool_kwargs["ssl_context"] = self.ssl_context
+        super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
+
+    def proxy_manager_for(self, proxy: str, **proxy_kwargs: Any) -> Any:
+        proxy_kwargs["ssl_context"] = self.ssl_context
+        return super().proxy_manager_for(proxy, **proxy_kwargs)
 
 
 def parse_illinois_date(value: str | None) -> str:
@@ -65,6 +97,10 @@ class IllinoisApiClient:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.client = requests.Session()
+        self.client.mount(
+            f"{str(self.settings.illinois_site_base).rstrip('/')}/",
+            _IllinoisTlsAdapter(_illinois_ssl_context()),
+        )
         self.client.headers.update(
             {
                 "User-Agent": (
