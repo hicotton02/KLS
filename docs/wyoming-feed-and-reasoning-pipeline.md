@@ -115,7 +115,13 @@ Caption downloads use bounded retries. A temporary caption error, including a
 publisher `429`, falls through to the configured transcription service instead
 of marking the recording permanently failed.
 
-The current statuses are `pending`, `transcribing`, `scanning`, `available`, `complete`, `failed`, and `source_unavailable`. Temporary transcription and reasoning failures become eligible again after a six-hour cooldown. Confirmed missing, private, invalid, or unusable recordings are marked `source_unavailable` and leave the active queue. Stale `transcribing` claims expire after three hours, and stale `scanning` claims expire after six hours. Timeouts and malformed extraction output therefore return to the queue without creating a tight retry loop.
+Temporary transcription and reasoning failures (`failed`) become eligible again after a six-hour cooldown. Stale `transcribing` claims expire after three hours, and stale `scanning` claims expire after six hours.
+
+Held recordings have distinct statuses: `source_unavailable` for a missing/private recording, `source_restricted` for an access restriction, `source_invalid` for a malformed link, empty file, or webpage returned instead of audio, `processing_failed` for unreadable media, and `quality_failed` for rejected or empty transcription. These are not interchangeable. Quality thresholds remain unchanged, and held recordings require an explicit retry after investigation. Bills with only held recordings report `needs_review`, not a pending queue that cannot make progress.
+
+Wyoming discovery normalizes known 2018 archive path errors and reuses existing HTTP/HTTPS recordings. Legacy duplicate rows retain their data and IDs, with `duplicate_of_id` pointing to the main recording; they are excluded from queues and coverage counts. Published evidence is not deleted. `kls_legislative_media_issues{state="wy",reason="..."}` reports held items separately from active backlog.
+
+For legacy repair, pause the Wyoming discovery/transcription/reasoning CronJobs and wait for active work to finish. Run `python -m app.wyoming_media_repair` for a dry run, then `python -m app.wyoming_media_repair --apply --backup /tmp/wyoming-media-before.json`. Export that backup before removing the pod. The transaction refuses active recordings or conflicting session identities, preserves existing transcripts/evidence, and queues one recovery attempt for legacy audio/quality failures. Re-running the repair does not queue those items again. Refresh bill explanation scans, then resume the CronJobs. A zero backlog does not mean there are zero held recordings.
 
 Long transcription claims expire after three hours. Reason-extraction claims
 expire after six hours. Fresh and interactive workloads keep priority; KLS

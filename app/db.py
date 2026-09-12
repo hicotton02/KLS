@@ -12,6 +12,7 @@ from typing import Any
 
 from app.settings import get_settings
 from app.text_utils import iso_now
+from app.wyoming_media_sources import normalize_wyoming_media_url, wyoming_media_url_variants
 
 try:
     import psycopg
@@ -211,6 +212,7 @@ CREATE TABLE IF NOT EXISTS legislative_media (
     title TEXT,
     duration_seconds INTEGER,
     transcript_status TEXT NOT NULL DEFAULT 'pending',
+    duplicate_of_id INTEGER,
     transcript_source TEXT,
     transcript_json TEXT,
     transcript_error TEXT,
@@ -658,6 +660,9 @@ def _apply_schema(connection: sqlite3.Connection | PostgresConnection) -> None:
     _ensure_bill_search_index(connection)
     _ensure_page_view_columns(connection)
     _ensure_sync_status_columns(connection)
+    media_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(legislative_media)").fetchall()}
+    if "duplicate_of_id" not in media_columns:
+        connection.execute("ALTER TABLE legislative_media ADD COLUMN duplicate_of_id INTEGER")
 
 
 def _initialize_postgres_schema(connection: PostgresConnection) -> bool:
@@ -1630,6 +1635,18 @@ def upsert_legislative_media(payload: dict[str, Any]) -> int:
     }
     columns = list(item)
     with connect() as connection:
+        if item["state"] == "wy":
+            item["source_url"] = normalize_wyoming_media_url(item["source_url"])
+            variants = wyoming_media_url_variants(item["source_url"])
+            existing = connection.execute(
+                f"""SELECT source_url FROM legislative_media
+                WHERE state = ? AND year = ? AND special_session_key = ? AND duplicate_of_id IS NULL
+                  AND source_url IN ({', '.join('?' for _ in variants)})
+                ORDER BY CASE WHEN transcript_status = 'available' THEN 0 ELSE 1 END, id LIMIT 1""",
+                [item["state"], item["year"], item["special_session_key"], *variants],
+            ).fetchone()
+            if existing:
+                item["source_url"] = existing["source_url"]
         connection.execute(
             f"""
             INSERT INTO legislative_media ({', '.join(columns)})
@@ -1676,7 +1693,7 @@ def list_legislative_media(
     explanation_scan_statuses: Sequence[str] | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    clauses = ["state = ?"]
+    clauses = ["state = ?", "duplicate_of_id IS NULL"]
     params: list[Any] = [state]
     if years:
         clauses.append(f"year IN ({', '.join('?' for _ in years)})")
@@ -1758,7 +1775,7 @@ def _claim_legislative_media(
     )
     claimable_params.extend((claimed_status, stale_before))
     claimable_sql = f"({' OR '.join(claimable_parts)})"
-    clauses = ["state = ?"]
+    clauses = ["state = ?", "duplicate_of_id IS NULL"]
     params: list[Any] = [str(state)]
     if years:
         clauses.append(f"year IN ({', '.join('?' for _ in years)})")
@@ -1781,7 +1798,7 @@ def _claim_legislative_media(
         ).fetchall()
         for candidate in candidates:
             media_id = int(candidate["id"])
-            update_clauses = [claimable_sql]
+            update_clauses = [claimable_sql, "duplicate_of_id IS NULL"]
             update_params: list[Any] = [claimed_status, now, now, media_id]
             update_params.extend(claimable_params)
             if required_status_column and required_statuses:
@@ -2232,10 +2249,15 @@ def get_vote_explanation_overview(state: str) -> dict[str, Any]:
             SELECT COUNT(*) AS media_total,
                    SUM(CASE WHEN transcript_status = 'available' THEN 1 ELSE 0 END) AS media_transcribed,
                    SUM(CASE WHEN explanation_scan_status = 'complete' THEN 1 ELSE 0 END) AS media_scanned,
-                   SUM(CASE WHEN transcript_status IN ('pending', 'transcribing') THEN 1 ELSE 0 END) AS transcription_backlog,
+                   SUM(CASE WHEN transcript_status IN ('pending', 'needs_transcription', 'transcribing', 'failed') THEN 1 ELSE 0 END) AS transcription_backlog,
+                   SUM(CASE WHEN transcript_status = 'quality_failed' THEN 1 ELSE 0 END) AS transcription_quality_failed,
+                   SUM(CASE WHEN transcript_status = 'processing_failed' THEN 1 ELSE 0 END) AS transcription_processing_failed,
+                   SUM(CASE WHEN transcript_status = 'source_invalid' THEN 1 ELSE 0 END) AS invalid_recording_links,
+                   SUM(CASE WHEN transcript_status = 'source_unavailable' THEN 1 ELSE 0 END) AS unavailable_recordings,
+                   SUM(CASE WHEN transcript_status = 'source_restricted' THEN 1 ELSE 0 END) AS restricted_recordings,
                    SUM(CASE WHEN transcript_status = 'available' AND explanation_scan_status IN ('pending', 'scanning') THEN 1 ELSE 0 END) AS reasoning_backlog,
                    MAX(explanation_scanned_at) AS last_scanned_at
-            FROM legislative_media WHERE state = ?
+            FROM legislative_media WHERE state = ? AND duplicate_of_id IS NULL
             """,
             (state,),
         ).fetchone()

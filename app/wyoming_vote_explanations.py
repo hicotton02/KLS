@@ -40,6 +40,7 @@ from app.ollama import OllamaClient
 from app.settings import Settings, get_settings
 from app.text_utils import iso_now
 from app.wyoming_api import WyomingApiClient
+from app.wyoming_media_sources import normalize_wyoming_media_url
 
 
 Logger = Callable[[str], None]
@@ -80,14 +81,9 @@ class TranscriptResult:
 
 
 TERMINAL_TRANSCRIPT_ERROR_MARKERS = (
-    "official recording source url is invalid",
-    "invalid data found when processing input",
     "this video is not available",
     "video unavailable",
     "private video",
-    "sign in to confirm your age",
-    "returned no timestamped speech",
-    "chunk rejected",
 )
 
 
@@ -95,7 +91,21 @@ def _with_terminal_transcript_status(result: TranscriptResult) -> TranscriptResu
     error = str(result.error or "").casefold()
     if result.status == "failed" and any(marker in error for marker in TERMINAL_TRANSCRIPT_ERROR_MARKERS):
         result.status = "source_unavailable"
+    elif result.status == "failed" and any(marker in error for marker in (
+        "returned no timestamped speech", "chunk rejected", "chunk speech density",
+    )):
+        result.status = "quality_failed"
+    elif result.status == "failed" and "sign in to confirm your age" in error:
+        result.status = "source_restricted"
+    elif result.status == "failed" and "invalid data found when processing input" in error:
+        result.status = "processing_failed"
     return result
+
+
+class MediaSourceError(ValueError):
+    def __init__(self, message: str, *, status: str = "source_invalid") -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class TranscriptionChunkQualityError(RuntimeError):
@@ -122,18 +132,7 @@ def _youtube_id(source_url: str) -> str | None:
 
 
 def _normalize_media_source_url(source_url: object) -> str:
-    value = str(source_url or "").strip()
-    if not value:
-        return ""
-    parsed = urlparse(value)
-    host = parsed.netloc.casefold().split(":", 1)[0]
-    if parsed.scheme.casefold() == "s" and host in YOUTUBE_HOSTS:
-        return parsed._replace(scheme="https").geturl()
-    if value.startswith("//"):
-        return f"https:{value}"
-    if value.casefold().startswith(("wyoleg.gov/", "www.wyoleg.gov/")):
-        return f"https://{value}"
-    return value
+    return normalize_wyoming_media_url(source_url)
 
 
 def _source_kind(source_url: str) -> tuple[str, str | None]:
@@ -355,11 +354,25 @@ def _download_media(media: dict[str, Any], destination: Path) -> Path:
             raise RuntimeError("Downloaded YouTube audio could not be located")
         return candidates[0]
     output_path = destination.with_suffix(Path(urlparse(str(media["source_url"])).path).suffix or ".mp4")
-    with httpx.Client(timeout=None, follow_redirects=True) as client:
+    with httpx.Client(timeout=httpx.Timeout(60, connect=20), follow_redirects=True) as client:
         with client.stream("GET", str(media["source_url"])) as response:
+            if response.status_code in {404, 410}:
+                raise MediaSourceError(
+                    f"The recording server returned HTTP {response.status_code} for {response.url}",
+                    status="source_unavailable",
+                )
             response.raise_for_status()
+            content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            chunks = response.iter_bytes(64 * 1024)
+            first = next(chunks, b"")
+            prefix = first.lstrip().lower()
+            if content_type in {"text/html", "application/xhtml+xml", "application/json", "text/plain"} or prefix.startswith((b"<!doctype html", b"<html", b"<?xml")):
+                raise MediaSourceError(f"The recording link returned a webpage or text instead of audio: {response.url}")
+            if not first:
+                raise MediaSourceError(f"The recording link returned an empty file: {response.url}")
             with output_path.open("wb") as handle:
-                for chunk in response.iter_bytes(1024 * 1024):
+                handle.write(first)
+                for chunk in chunks:
                     handle.write(chunk)
     return output_path
 
@@ -801,7 +814,7 @@ def fetch_media_transcript(
         source_url = _normalize_media_source_url(media.get("source_url"))
         parsed_source = urlparse(source_url)
         if parsed_source.scheme.casefold() not in {"http", "https"} or not parsed_source.netloc:
-            return TranscriptResult(status="source_unavailable", error="The official recording source URL is invalid.")
+            return TranscriptResult(status="source_invalid", error="The official recording source URL is invalid.")
         normalized_media = dict(media)
         normalized_media["source_url"] = source_url
         captions: TranscriptResult | None = None
@@ -843,6 +856,8 @@ def fetch_media_transcript(
             status="needs_transcription",
             error="No transcription service is configured.",
         )
+    except MediaSourceError as exc:
+        return TranscriptResult(status=exc.status, error=str(exc)[:1000])
     except (httpx.HTTPError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         return _with_terminal_transcript_status(TranscriptResult(status="failed", error=str(exc)[:1000]))
 
@@ -866,6 +881,8 @@ def transcribe_wyoming_media(
             media = get_legislative_media(media_id)
             if media is None:
                 raise ValueError(f"Wyoming legislative media {media_id} was not found")
+            if media.get("duplicate_of_id"):
+                raise ValueError(f"Legislative media {media_id} is a duplicate; use {media['duplicate_of_id']}")
             if str(media.get("state") or "").casefold() != "wy" or int(media.get("year") or 0) not in selected_year_set:
                 raise ValueError(f"Legislative media {media_id} is not in the selected Wyoming years")
             if not force and media.get("transcript_status") not in {"pending", "needs_transcription"}:
@@ -1365,6 +1382,10 @@ def _bill_explanation_scan_status(bill_media: list[dict[str, Any]]) -> str:
         return "complete"
     if any(item.get("explanation_scan_status") == "complete" for item in bill_media):
         return "partial"
+    if all(item.get("transcript_status") in {
+        "source_unavailable", "source_invalid", "source_restricted", "quality_failed", "processing_failed",
+    } for item in bill_media):
+        return "needs_review"
     if any(item.get("transcript_status") == "available" for item in bill_media):
         return "pending"
     if any(item.get("transcript_status") == "needs_transcription" for item in bill_media):

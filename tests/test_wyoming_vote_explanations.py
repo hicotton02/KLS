@@ -433,7 +433,7 @@ def test_transcription_chunks_use_configured_concurrency(monkeypatch, tmp_path) 
     [
         ("s://youtu.be/wFUJMqXGsBE", "https://youtu.be/wFUJMqXGsBE"),
         ("wyoleg.gov/2018/Audio/session.mp3", "https://wyoleg.gov/2018/Audio/session.mp3"),
-        ("//www.wyoleg.gov/2020/Audio/session.mp3", "https://www.wyoleg.gov/2020/Audio/session.mp3"),
+        ("//www.wyoleg.gov/2020/Audio/session.mp3", "https://wyoleg.gov/2020/Audio/session.mp3"),
     ],
 )
 def test_normalize_official_media_source_urls(source_url: str, expected: str) -> None:
@@ -452,7 +452,7 @@ def test_invalid_media_source_url_fails_without_calling_transcription(monkeypatc
         SimpleNamespace(transcription_api_url="http://stt.example", local_transcription_model=""),
     )
 
-    assert result.status == "source_unavailable"
+    assert result.status == "source_invalid"
     assert result.error == "The official recording source URL is invalid."
 
 

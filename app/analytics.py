@@ -58,6 +58,11 @@ LEGISLATIVE_MEDIA_BACKLOG = Gauge(
     "Legislative media items waiting for a pipeline stage.",
     ["state", "stage"],
 )
+LEGISLATIVE_MEDIA_ISSUES = Gauge(
+    "kls_legislative_media_issues",
+    "Unique legislative recordings held for a source or processing issue.",
+    ["state", "reason"],
+)
 
 BOT_PATTERN = re.compile(
     r"(bot|crawl|spider|slurp|fetch|headless|preview|monitor|scan|python-requests|curl|wget|go-http-client)",
@@ -88,6 +93,14 @@ def metrics_response() -> Response:
         LEGISLATIVE_MEDIA_BACKLOG.labels(state="wy", stage="reasoning").set(
             int(overview.get("reasoning_backlog") or 0)
         )
+        for reason, field in {
+            "quality_failed": "transcription_quality_failed",
+            "processing_failed": "transcription_processing_failed",
+            "source_invalid": "invalid_recording_links",
+            "source_unavailable": "unavailable_recordings",
+            "source_restricted": "restricted_recordings",
+        }.items():
+            LEGISLATIVE_MEDIA_ISSUES.labels(state="wy", reason=reason).set(int(overview.get(field) or 0))
     except Exception:  # pragma: no cover - request metrics must survive a database outage.
         pass
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
