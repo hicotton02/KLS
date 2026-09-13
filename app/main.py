@@ -69,6 +69,7 @@ from app.jurisdictions import (
 )
 from app.relationship_service import relationship_peer
 from app.settings import get_settings
+from app.site_analytics import site_analytics_router
 from app.tagging import tag_label
 from app.voting import chamber_title
 from app.wyoming_api import WyomingApiClient
@@ -80,6 +81,7 @@ app = FastAPI(title=settings.app_title)
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 geoip_resolver = GeoIPResolver(settings)
+app.include_router(site_analytics_router(geoip_resolver))
 
 
 def _static_asset_version(*relative_paths: str) -> str:

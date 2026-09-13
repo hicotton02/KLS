@@ -415,6 +415,8 @@ BILL_COLUMN_DEFINITIONS = {
     "vote_data_synced_at": "TEXT",
 }
 PAGE_VIEW_COLUMN_DEFINITIONS = {
+    "tracking_source": "TEXT NOT NULL DEFAULT 'legacy'",
+    "event_id": "TEXT",
     "region_code": "TEXT",
     "region_name": "TEXT",
     "city_name": "TEXT",
@@ -728,6 +730,8 @@ def _ensure_page_view_columns(connection: sqlite3.Connection) -> None:
     connection.execute("CREATE INDEX IF NOT EXISTS idx_page_views_referrer_domain ON page_views(referrer_domain, occurred_at)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_page_views_visitor_hash ON page_views(visitor_hash, occurred_at)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_page_views_bot_reason ON page_views(bot_reason, occurred_at)")
+    connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_page_views_event_id ON page_views(event_id) WHERE event_id IS NOT NULL")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_page_views_site_received ON page_views(occurred_at) WHERE tracking_source = 'site_server'")
 
 
 def _ensure_sync_status_columns(connection: sqlite3.Connection) -> None:
@@ -3106,7 +3110,7 @@ def _search_tokens(query: str) -> list[str]:
     ]
 
 
-def record_page_view(payload: dict[str, Any]) -> None:
+def record_page_view(payload: dict[str, Any]) -> bool:
     columns = [
         "occurred_at",
         "created_at",
@@ -3127,6 +3131,8 @@ def record_page_view(payload: dict[str, Any]) -> None:
         "is_bot",
         "bot_reason",
         "user_agent",
+        "tracking_source",
+        "event_id",
     ]
     serializable = {
         "occurred_at": str(payload.get("occurred_at") or ""),
@@ -3148,14 +3154,17 @@ def record_page_view(payload: dict[str, Any]) -> None:
         "is_bot": 1 if payload.get("is_bot") else 0,
         "bot_reason": str(payload.get("bot_reason") or "")[:80] or None,
         "user_agent": str(payload.get("user_agent") or "")[:300] or None,
+        "tracking_source": str(payload.get("tracking_source") or "legacy"),
+        "event_id": str(payload.get("event_id") or "") or None,
     }
     placeholders = ", ".join(f":{column}" for column in columns)
     with connect() as connection:
-        connection.execute(
-            f"INSERT INTO page_views ({', '.join(columns)}) VALUES ({placeholders})",
+        cursor = connection.execute(
+            f"INSERT INTO page_views ({', '.join(columns)}) VALUES ({placeholders}) ON CONFLICT DO NOTHING",
             serializable,
         )
         connection.commit()
+        return cursor.rowcount == 1
 
 
 def cleanup_page_views(retention_cutoff: str) -> int:
@@ -3235,6 +3244,14 @@ def get_analytics_overview(
     summary: dict[str, Any] = {"windows": {}}
     normalized_internal_hosts = tuple(dict.fromkeys(host.strip().lower() for host in internal_hosts if host and host.strip()))
     with connect() as connection:
+        site_tracking = connection.execute(
+            """SELECT MIN(occurred_at) AS first_received, MAX(occurred_at) AS last_received,
+            SUM(CASE WHEN is_bot = 0 THEN 1 ELSE 0 END) AS browser_views,
+            SUM(CASE WHEN is_bot = 1 THEN 1 ELSE 0 END) AS bot_views
+            FROM page_views WHERE tracking_source = 'site_server' AND occurred_at >= ?""",
+            (since_30d,),
+        ).fetchone()
+        summary["site_tracking"] = dict(site_tracking or {})
         for label, cutoff in windows.items():
             row = connection.execute(
                 """

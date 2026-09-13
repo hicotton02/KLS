@@ -1,5 +1,9 @@
+import { adsensePublisherId } from "../lib/adsense";
+
 export async function GET() {
-  const value = process.env.KLS_ADS_TXT?.trim();
+  const publisherId = adsensePublisherId();
+  const value = process.env.KLS_ADS_TXT?.trim() ||
+    (publisherId ? `google.com, ${publisherId}, DIRECT, f08c47fec0942fa0` : "");
   if (!value) {
     return new Response("Not configured\n", {
       status: 404,

@@ -18,9 +18,10 @@ ENV NODE_ENV=production \
 WORKDIR /app
 
 COPY --from=build /app/dist/standalone ./
+COPY --from=build /app/server-analytics.mjs ./server-analytics.mjs
 
 EXPOSE 3000
 
 USER 10001:10001
 
-CMD ["node", "server.js"]
+CMD ["node", "--import", "./server-analytics.mjs", "server.js"]

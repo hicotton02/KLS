@@ -77,6 +77,11 @@ spec:
             - secretRef:
                 name: keeping-law-simple-secrets
           env:
+            - name: KLS_SITE_ANALYTICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: keeping-law-simple-site-analytics
+                  key: KLS_SITE_ANALYTICS_TOKEN
             - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:

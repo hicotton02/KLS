@@ -177,6 +177,7 @@ class Settings:
     ollama_timeout_seconds: float
     sync_parallelism: int
     analytics_enabled: bool
+    site_analytics_token: str
     analytics_retention_days: int
     analytics_country_db_path: str
     analytics_country_db_url: str
@@ -360,6 +361,7 @@ def get_settings() -> Settings:
         ollama_timeout_seconds=float(os.getenv("KLS_OLLAMA_TIMEOUT_SECONDS", "180")),
         sync_parallelism=max(1, int(os.getenv("KLS_SYNC_PARALLELISM", "1"))),
         analytics_enabled=_parse_bool(os.getenv("KLS_ANALYTICS_ENABLED"), default=True),
+        site_analytics_token=os.getenv("KLS_SITE_ANALYTICS_TOKEN", "").strip(),
         analytics_retention_days=max(7, int(os.getenv("KLS_ANALYTICS_RETENTION_DAYS", "180"))),
         analytics_country_db_path=os.getenv("KLS_ANALYTICS_COUNTRY_DB_PATH", "/data/geoip/dbip-city-lite.mmdb"),
         analytics_country_db_url=os.getenv("KLS_ANALYTICS_COUNTRY_DB_URL", ""),

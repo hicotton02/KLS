@@ -195,11 +195,30 @@ test("contains product metadata and no starter or model details", async () => {
   assert.match(analyticsConsent, /ad_storage: "denied"/);
   assert.doesNotMatch(layout, /codex-preview|_sites-preview|Starter Project/i);
   assert.match(nextConfig, /output: "standalone"/);
-  assert.match(dockerfile, /CMD \["node", "server\.js"\]/);
+  assert.match(dockerfile, /CMD \["node", "--import", "\.\/server-analytics\.mjs", "server\.js"\]/);
 
   await access(new URL("../dist/standalone/server.js", import.meta.url));
 
   await assert.rejects(
     access(new URL("app/_sites-preview/SkeletonPreview.tsx", templateRoot)),
   );
+});
+
+test("AdSense verification works without loading advertisements", async () => {
+  const original = process.env.KLS_ADSENSE_PUBLISHER_ID;
+  process.env.KLS_ADSENSE_PUBLISHER_ID = "pub-4907492213987533";
+  try {
+    const home = await render("/", "https://www.keepinglawsimple.org");
+    const html = await home.text();
+    assert.match(html, /<meta name="google-adsense-account" content="ca-pub-4907492213987533"/);
+    assert.doesNotMatch(html, /<script[^>]+adsbygoogle|<ins[^>]+adsbygoogle/);
+    const ads = await render("/ads.txt", "https://www.keepinglawsimple.org");
+    assert.equal(ads.status, 200);
+    assert.equal(await ads.text(), "google.com, pub-4907492213987533, DIRECT, f08c47fec0942fa0\n");
+    process.env.KLS_ADSENSE_PUBLISHER_ID = "invalid-publisher";
+    assert.equal((await render("/ads.txt", "https://www.keepinglawsimple.org")).status, 404);
+  } finally {
+    if (original === undefined) delete process.env.KLS_ADSENSE_PUBLISHER_ID;
+    else process.env.KLS_ADSENSE_PUBLISHER_ID = original;
+  }
 });

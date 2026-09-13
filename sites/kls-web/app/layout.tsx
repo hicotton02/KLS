@@ -3,6 +3,7 @@ import { Geist } from "next/font/google";
 import Link from "next/link";
 import { AnalyticsConsent } from "./components/AnalyticsConsent";
 import { SiteHeader } from "./components/SiteHeader";
+import { adsensePublisherId } from "./lib/adsense";
 import { absoluteUrl, SITE_DESCRIPTION, SITE_NAME, SITE_ORIGIN } from "./lib/site";
 import "./globals.css";
 
@@ -42,9 +43,13 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const measurementId = process.env.KLS_GOOGLE_ANALYTICS_ID?.trim() || "";
+  const publisherId = adsensePublisherId();
 
   return (
     <html lang="en">
+      <head>
+        {publisherId ? <meta name="google-adsense-account" content={`ca-${publisherId}`} /> : null}
+      </head>
       <body className={geist.variable}>
         <SiteHeader />
         {children}

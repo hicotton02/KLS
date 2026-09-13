@@ -108,6 +108,14 @@ def metrics_response() -> Response:
 
 def route_label_for_path(path: str) -> str:
     normalized = path or "/"
+    if normalized.startswith("/area/"):
+        if "/bill/" in normalized:
+            return "area_bill_detail"
+        if "/legislators" in normalized:
+            return "area_legislator"
+        if "/vote-explanations" in normalized:
+            return "area_vote_explanations"
+        return "area_listing"
     if normalized == "/":
         return "home"
     if normalized.startswith("/static/"):
@@ -323,9 +331,11 @@ def track_page_view(
     settings: Settings,
     resolver: GeoIPResolver,
     occurred_at: datetime | None = None,
-) -> None:
+    tracking_source: str = "legacy",
+    event_id: str | None = None,
+) -> bool:
     if not settings.analytics_enabled or not should_track_page_view(request, response):
-        return
+        return False
     timestamp = (occurred_at or datetime.now(timezone.utc)).replace(microsecond=0).isoformat()
     path = request.url.path or "/"
     route_label = route_label_for_path(path)
@@ -341,7 +351,7 @@ def track_page_view(
     city_name_label = (city_name or "").strip() or None
     latitude_label = _coordinate_label(latitude)
     longitude_label = _coordinate_label(longitude)
-    record_page_view(
+    inserted = record_page_view(
         {
             "occurred_at": timestamp,
             "created_at": timestamp,
@@ -362,8 +372,12 @@ def track_page_view(
             "is_bot": bot,
             "bot_reason": bot_reason,
             "user_agent": user_agent,
+            "tracking_source": tracking_source,
+            "event_id": event_id,
         }
     )
+    if not inserted:
+        return False
     TRACKED_PAGE_VIEWS_TOTAL.labels(traffic_type=traffic_type).inc()
     TRACKED_PAGE_VIEWS_BY_ROUTE_TOTAL.labels(traffic_type=traffic_type, route=route_label).inc()
     TRACKED_PAGE_VIEWS_BY_COUNTRY_TOTAL.labels(traffic_type=traffic_type, country_code=country_code_label).inc()
@@ -377,6 +391,7 @@ def track_page_view(
             latitude=latitude_label,
             longitude=longitude_label,
         ).inc()
+    return True
 
 
 def cleanup_old_page_views(settings: Settings) -> int:

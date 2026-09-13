@@ -4,6 +4,13 @@
 <a class="back-link" href="/">Back to home</a>
 <a class="back-link" href="/admin/messages">Open site messages</a>
 
+<section class="panel">
+  <h2>Current website traffic</h2>
+  <p>{{ analytics.site_tracking.browser_views or 0 }} browser page views and {{ analytics.site_tracking.bot_views or 0 }} automated requests in the last 30 days from the updated logger.</p>
+  <p>Last page received: {{ analytics.site_tracking.last_received or 'No page views received yet' }}.</p>
+  <p class="cell-note">Counts below also include the older logger. Browser counts are estimates, not verified ad impressions. Use Google Analytics to confirm your audience before estimating ad income.</p>
+</section>
+
 <section class="hero-card">
   <div>
     <p class="eyebrow">Admin Analytics</p>
