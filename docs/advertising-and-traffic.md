@@ -7,8 +7,8 @@ variable `KLS_ADSENSE_PUBLISHER_ID`. It adds Google's account verification meta 
 serves the authorized seller line at `/ads.txt`. `KLS_ADS_TXT` remains an optional explicit override.
 
 The owner confirmed site approval, a published three-choice Google consent message,
-and Auto ads off. Before enabling ads, also confirm Politics is blocked in AdSense's
-Brand safety > Content > Blocking controls > Sensitive categories. The public
+and Auto ads off. September 13 screenshots confirm Politics and Religion are blocked,
+and the European regulations message is Published for keepinglawsimple.org. The public
 advertising policy excludes political ads; Google category blocking is best effort,
 so review served ads and block any that slip through.
 
@@ -47,11 +47,19 @@ Political categories: https://support.google.com/adsense/answer/164131?hl=en
   types in `db/index.ts` and `worker/index.ts`; none of the new ad files produced errors.
 - A real SDK probe on the public site, including Google's GDPR preview parameters,
   did not receive Google CMP callbacks or display its consent message. The same happened
-  with the standard Google snippet. The cause is not confirmed. Verify the published
-  message's site assignment and delivery before enabling ads; do not bypass the gate.
-- Politics blocking is still awaiting owner confirmation. Production remains on its
-  previous image with ads off. Deploy the candidate and change the runtime flag only
-  after both account checks and the real consent test pass.
+  with the standard Google snippet. The cause is not confirmed; do not bypass the gate.
+- Follow-up after the owner's screenshots: published status, site assignment, Politics
+  blocking, and Religion blocking are confirmed. No additional screenshot of those
+  settings is needed. The screenshots do not include the account's publisher ID.
+- Isolated browser tests on both canonical and apex origins also failed to display
+  the real consent message. A diagnostic direct load of Google's consent service
+  returned `googlefcInactive`, a TCF stub without a consent string, and no US opt-out
+  API. This was not added to the application. Even the standard SDK without our
+  controller did not load the message. An initial startup-gate diagnosis is therefore
+  not an established root cause.
+- Next check: match the AdSense page URL or Account information publisher ID against
+  `pub-4907492213987533`, then resolve real message delivery. Production remains on its
+  previous image with ads off; no runtime or deployment changes were made in this follow-up.
 
 ## Current site page logging
 
