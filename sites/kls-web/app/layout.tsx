@@ -3,7 +3,7 @@ import { Geist } from "next/font/google";
 import Link from "next/link";
 import { AnalyticsConsent } from "./components/AnalyticsConsent";
 import { SiteHeader } from "./components/SiteHeader";
-import { adsensePublisherId } from "./lib/adsense";
+import { adsensePublisherId, displayAdConfig } from "./lib/adsense";
 import { absoluteUrl, SITE_DESCRIPTION, SITE_NAME, SITE_ORIGIN } from "./lib/site";
 import "./globals.css";
 
@@ -44,6 +44,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const measurementId = process.env.KLS_GOOGLE_ANALYTICS_ID?.trim() || "";
   const publisherId = adsensePublisherId();
+  const adsEnabled = Boolean(displayAdConfig());
 
   return (
     <html lang="en">
@@ -70,7 +71,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
             </nav>
             <div className="footer-legal">
               <p>Official text always wins.</p>
-              {measurementId ? <AnalyticsConsent measurementId={measurementId} /> : null}
+              {measurementId ? <AnalyticsConsent measurementId={measurementId} adsEnabled={adsEnabled} /> : null}
             </div>
           </div>
         </footer>

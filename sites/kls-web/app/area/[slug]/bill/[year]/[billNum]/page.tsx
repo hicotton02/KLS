@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { DisplayAd } from "../../../../../components/DisplayAd";
 import Link from "next/link";
 import { AlertTriangle, ArrowLeft, CalendarDays, CheckCircle2, ChevronDown, Clock3, ExternalLink, FileText, MessageSquareQuote, PlayCircle, SearchX, Vote } from "lucide-react";
 import { notFound } from "next/navigation";
@@ -287,6 +288,7 @@ export default async function BillPage({ params, searchParams }: { params: Route
           })}</div>
         </section>
       ) : null}
+      {interpretation.one_sentence_summary && interpretation.fact_check_status === "validated" ? <DisplayAd /> : null}
     </main>
   );
 }

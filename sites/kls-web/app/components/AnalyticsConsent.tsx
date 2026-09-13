@@ -16,19 +16,17 @@ function analyticsWindow() {
   return window as AnalyticsWindow;
 }
 
-function setGoogleConsent(choice: ConsentChoice) {
+function setGoogleConsent(choice: ConsentChoice, adsEnabled: boolean) {
   const current = analyticsWindow();
   current.dataLayer = current.dataLayer || [];
   current.gtag = current.gtag || function gtag(...args: unknown[]) { current.dataLayer?.push(args); };
   current.gtag("consent", "update", {
     analytics_storage: choice,
-    ad_storage: "denied",
-    ad_user_data: "denied",
-    ad_personalization: "denied",
+    ...(!adsEnabled ? { ad_storage: "denied", ad_user_data: "denied", ad_personalization: "denied" } : {}),
   });
 }
 
-function loadAnalytics(measurementId: string) {
+function loadAnalytics(measurementId: string, adsEnabled: boolean) {
   const current = analyticsWindow();
   if (current.__klsAnalyticsLoaded) return;
   current.__klsAnalyticsLoaded = true;
@@ -36,9 +34,7 @@ function loadAnalytics(measurementId: string) {
   current.gtag = current.gtag || function gtag(...args: unknown[]) { current.dataLayer?.push(args); };
   current.gtag("consent", "default", {
     analytics_storage: "granted",
-    ad_storage: "denied",
-    ad_user_data: "denied",
-    ad_personalization: "denied",
+    ...(!adsEnabled ? { ad_storage: "denied", ad_user_data: "denied", ad_personalization: "denied" } : {}),
   });
   current.gtag("js", new Date());
   current.gtag("config", measurementId, { send_page_view: false });
@@ -49,7 +45,7 @@ function loadAnalytics(measurementId: string) {
   document.head.appendChild(script);
 }
 
-export function AnalyticsConsent({ measurementId }: { measurementId: string }) {
+export function AnalyticsConsent({ measurementId, adsEnabled = false }: { measurementId: string; adsEnabled?: boolean }) {
   const pathname = usePathname();
   const [choice, setChoice] = useState<ConsentChoice | null | undefined>(undefined);
 
@@ -65,13 +61,13 @@ export function AnalyticsConsent({ measurementId }: { measurementId: string }) {
 
   useEffect(() => {
     if (choice !== "granted" || !measurementId) return;
-    loadAnalytics(measurementId);
+    loadAnalytics(measurementId, adsEnabled);
     analyticsWindow().gtag?.("event", "page_view", {
       page_location: window.location.href,
       page_path: pathname,
       page_title: document.title,
     });
-  }, [choice, measurementId, pathname]);
+  }, [choice, measurementId, pathname, adsEnabled]);
 
   function saveChoice(nextChoice: ConsentChoice) {
     try {
@@ -79,7 +75,7 @@ export function AnalyticsConsent({ measurementId }: { measurementId: string }) {
     } catch {
       // The current page still honors the choice when storage is unavailable.
     }
-    setGoogleConsent(nextChoice);
+    setGoogleConsent(nextChoice, adsEnabled);
     setChoice(nextChoice);
   }
 
@@ -94,7 +90,7 @@ export function AnalyticsConsent({ measurementId }: { measurementId: string }) {
         <section className="consent-banner" role="dialog" aria-label="Analytics privacy choice">
           <div>
             <strong>Help us improve the site?</strong>
-            <p>Allow anonymous Google Analytics so we can see which pages help people. Advertising cookies stay off.</p>
+            <p>Allow Google Analytics so we can see which pages help people. {adsEnabled ? "Ad choices are separate." : "Advertising cookies stay off."}</p>
             <Link href="/privacy">Read the privacy policy</Link>
           </div>
           <div className="consent-actions">

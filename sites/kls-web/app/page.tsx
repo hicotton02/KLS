@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight, Clock3, Landmark, ShieldCheck } from "lucide-react";
 import { BillList } from "./components/BillList";
+import { DisplayAd } from "./components/DisplayAd";
 import { SearchBox } from "./components/SearchBox";
 import { StateDirectory } from "./components/StateDirectory";
 import { formatScanTimestamp, getOverview, lastScannedLabel } from "./lib/kls";
@@ -117,6 +118,7 @@ export default async function Home() {
         </div>
         <BillList bills={overview.recent_bills} emptyMessage="No recent bill updates are available." />
       </section>
+      {overview.recent_bills.length ? <div className="page-width"><DisplayAd /></div> : null}
     </main>
   );
 }

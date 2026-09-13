@@ -47,6 +47,13 @@ h2 { margin-bottom: 0.55rem; font-size: 1.75rem; font-weight: 700; }
 h3 { margin-bottom: 0.4rem; font-size: 1.05rem; }
 
 .page-width { width: min(1180px, calc(100% - 2rem)); margin-inline: auto; }
+.display-ad-anchor { min-height: 1px; }
+.display-ad { margin: 2rem 0; padding: 1.25rem 0; border-top: 1px solid var(--line); text-align: center; }
+.display-ad-label { display: block; margin-bottom: 0.65rem; color: var(--muted); font-size: 0.75rem; }
+.display-ad:has(ins[data-ad-status="unfilled"]) { display: none; }
+.ad-privacy-choices { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin-top: 1rem; }
+.ad-privacy-choices label { display: inline-flex; gap: 0.6rem; align-items: center; }
+.ad-privacy-choices input { width: 18px; height: 18px; }
 .page-main { padding-top: 2.2rem; padding-bottom: 4rem; min-height: 70vh; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .eyebrow { margin-bottom: 0.5rem; color: var(--brick); font-size: 0.78rem; font-weight: 760; text-transform: uppercase; }

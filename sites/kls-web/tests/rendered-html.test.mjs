@@ -222,3 +222,27 @@ test("AdSense verification works without loading advertisements", async () => {
     else process.env.KLS_ADSENSE_PUBLISHER_ID = original;
   }
 });
+
+test("manual ads are eligible only on content pages and still wait for browser consent", async () => {
+  const keys = ["KLS_ADS_ENABLED", "KLS_ADSENSE_PUBLISHER_ID", "KLS_ADSENSE_DISPLAY_SLOT"];
+  const original = keys.map(key => process.env[key]);
+  process.env.KLS_ADS_ENABLED = "true";
+  process.env.KLS_ADSENSE_PUBLISHER_ID = "pub-4907492213987533";
+  process.env.KLS_ADSENSE_DISPLAY_SLOT = "8149837735";
+  try {
+    for (const path of ["/", "/area/wyoming", "/area/wyoming/bill/2026/SF0001"]) {
+      const response = await render(path, "https://www.keepinglawsimple.org");
+      assert.equal(response.status, 200, path);
+      const html = await response.text();
+      assert.match(html, /class="display-ad-anchor"/, path);
+      assert.doesNotMatch(html, /<script[^>]+adsbygoogle|<ins[^>]+adsbygoogle/, path);
+    }
+    for (const path of ["/about", "/advertising", "/privacy", "/contact", "/search", "/missing-page", "/area/wyoming/vote-explanations", "/area/wyoming/legislators/wy-2093"]) {
+      const html = await (await render(path, "https://www.keepinglawsimple.org")).text();
+      assert.doesNotMatch(html, /class="display-ad-anchor"/, path);
+      if (path === "/privacy") assert.match(html, /Show ads on this browser/);
+    }
+  } finally {
+    keys.forEach((key, index) => { if (original[index] === undefined) delete process.env[key]; else process.env[key] = original[index]; });
+  }
+});

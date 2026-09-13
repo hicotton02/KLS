@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { DisplayAd } from "../../components/DisplayAd";
 import Link from "next/link";
 import { Clock3, ExternalLink, Filter, MessageSquareQuote, Users } from "lucide-react";
 import { notFound } from "next/navigation";
@@ -147,6 +148,7 @@ export default async function AreaPage({ params, searchParams }: { params: Route
         </div>
         <BillList bills={data.bills} emptyMessage="No bills matched those filters." />
       </section>
+      {data.bills.length ? <DisplayAd /> : null}
     </main>
   );
 }

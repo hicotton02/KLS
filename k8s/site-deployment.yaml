@@ -36,6 +36,10 @@ spec:
           env:
             - name: KLS_ADSENSE_PUBLISHER_ID
               value: pub-4907492213987533
+            - name: KLS_ADSENSE_DISPLAY_SLOT
+              value: "8149837735"
+            - name: KLS_ADS_ENABLED
+              value: "false"
             - name: KLS_SITE_ANALYTICS_TOKEN
               valueFrom:
                 secretKeyRef:
