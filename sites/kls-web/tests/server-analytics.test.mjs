@@ -72,12 +72,17 @@ test("permanent failures drop the batch without an infinite retry loop", async (
   } finally { collector.close(); }
 });
 
-test("a real Node HTTP response emits one page event", async () => {
+for (const style of ["setHeader", "writeHead", "rawHeaders"]) test(`a real Node HTTP response using ${style} emits one page event`, async () => {
   const batches = [];
   const collector = startServerAnalytics({ KLS_SITE_ANALYTICS_TOKEN: "test", KLS_API_BASE_URL: "http://internal.test" }, {
     fetchImpl: async (_, init) => { batches.push(JSON.parse(init.body)); return new Response("{}"); },
   });
-  const server = createServer((_, res) => { res.setHeader("Content-Type", "text/html"); res.end("ok"); });
+  const server = createServer((_, res) => {
+    if (style === "setHeader") res.setHeader("Content-Type", "text/html");
+    else if (style === "writeHead") res.writeHead(200, { "Content-Type": "text/html" });
+    else res.writeHead(200, "OK", ["Content-Type", "text/html"]);
+    res.end("ok");
+  });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   try {

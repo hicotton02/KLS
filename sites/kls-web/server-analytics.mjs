@@ -9,9 +9,9 @@ function header(request, name, length = 300) {
   return (Array.isArray(value) ? value[0] : value || "").slice(0, length);
 }
 
-export function pageEvent(request, response) {
+export function pageEvent(request, response, writtenContentType = "") {
   if (request.method !== "GET" || response.statusCode < 200 || response.statusCode >= 300) return null;
-  const contentType = String(response.getHeader("content-type") || "");
+  const contentType = String(writtenContentType || response.getHeader("content-type") || "");
   if (!/^(text\/html|text\/x-component)\b/i.test(contentType)) return null;
   if (header(request, "next-router-prefetch") || header(request, "next-router-segment-prefetch") ||
       /prefetch|prerender/i.test(`${header(request, "purpose")} ${header(request, "sec-purpose")}`)) return null;
@@ -93,16 +93,37 @@ export function startServerAnalytics(env = process.env, options = {}) {
   const collector = createCollector({
     endpoint: new URL("/internal/site-page-views", base).href, token, ...options,
   });
+  const started = channel("http.server.request.start");
   const finished = channel("http.server.response.finish");
+  const contentTypes = new WeakMap();
+  const onRequest = ({ response }) => {
+    const writeHead = response.writeHead;
+    // Node getHeader() cannot see headers passed directly to writeHead().
+    response.writeHead = function (...args) {
+      const headers = typeof args[1] === "string" ? args[2] : args[1];
+      if (Array.isArray(headers)) {
+        for (let i = 0; i < headers.length; i += 2) {
+          if (String(headers[i]).toLowerCase() === "content-type") contentTypes.set(response, String(headers[i + 1]));
+        }
+      } else if (headers && typeof headers === "object") {
+        for (const [name, value] of Object.entries(headers)) {
+          if (name.toLowerCase() === "content-type") contentTypes.set(response, String(value));
+        }
+      }
+      return Reflect.apply(writeHead, this, args);
+    };
+  };
   const listener = ({ request, response }) => {
     // Analytics must never break a page response.
     try {
-      const event = pageEvent(request, response);
+      const event = pageEvent(request, response, contentTypes.get(response));
       if (event) collector.enqueue(event);
     } catch { /* Ignore malformed request metadata. */ }
+    contentTypes.delete(response);
   };
+  started.subscribe(onRequest);
   finished.subscribe(listener);
-  return { ...collector, close() { finished.unsubscribe(listener); collector.close(); } };
+  return { ...collector, close() { started.unsubscribe(onRequest); finished.unsubscribe(listener); collector.close(); } };
 }
 
 startServerAnalytics();
