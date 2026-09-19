@@ -6,6 +6,27 @@ from app.colorado_api import ColoradoApiClient
 from app.settings import get_settings
 
 
+def test_colorado_bill_detail_requests_html_representation() -> None:
+    api = ColoradoApiClient(get_settings())
+    api.client.close()
+
+    def handler(request):
+        if "text/html" not in request.headers.get("accept", ""):
+            return httpx.Response(406, request=request)
+        return httpx.Response(200, text=(
+            '<span class="bill-detail-bill-number-tag">SB26-193</span>'
+            '<div class="full-bill-topic"><h1>Local Ordinances</h1></div>'
+        ), request=request)
+
+    api.client = httpx.Client(base_url=api.settings.colorado_site_base, transport=httpx.MockTransport(handler))
+    try:
+        detail = api.fetch_bill_detail("/bills/SB26-193")
+    finally:
+        api.close()
+    assert detail["bill"] == "SB26-193"
+    assert detail["catchTitle"] == "Local Ordinances"
+
+
 def test_fetch_year_bills_reads_all_pages() -> None:
     settings = get_settings()
     api = ColoradoApiClient(settings)

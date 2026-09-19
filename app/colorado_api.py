@@ -118,7 +118,9 @@ class ColoradoApiClient:
         return items
 
     def fetch_bill_detail(self, detail_path: str) -> dict[str, Any]:
-        response = get_source_with_retries(self.client, detail_path)
+        response = get_source_with_retries(
+            self.client, detail_path, headers={"Accept": "text/html,application/xhtml+xml"},
+        )
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 

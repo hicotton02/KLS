@@ -1,9 +1,72 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from app.settings import get_settings
 from app.wisconsin_api import WisconsinApiClient
+
+
+@pytest.mark.parametrize("failure", [503, 429, "timeout"])
+@pytest.mark.parametrize("stage", ["index", "detail", "text"])
+def test_wisconsin_retries_temporary_source_failures(monkeypatch, failure, stage) -> None:
+    from app import wisconsin_api
+    from app.http_retry import get_with_retries
+
+    delays = []
+    monkeypatch.setattr(
+        wisconsin_api, "get_with_retries",
+        lambda client, url: get_with_retries(client, url, sleeper=delays.append),
+    )
+    paths = {
+        "index": "/2025/related/proposals",
+        "detail": "/document/session/2025/REG/AB1",
+        "text": "/document/proposaltext/2025/REG/AB1",
+    }
+    counts = {}
+
+    def handler(request):
+        path = request.url.path
+        counts[path] = counts.get(path, 0) + 1
+        if path == paths[stage] and counts[path] == 1:
+            if failure == "timeout":
+                raise httpx.ReadTimeout("Temporary source timeout", request=request)
+            return httpx.Response(failure, headers={"Retry-After": "2"}, request=request)
+        html = '<a href="/document/proposaltext/2025/REG/AB1">AB1</a>'
+        return httpx.Response(200, text=html, request=request)
+
+    api = WisconsinApiClient(get_settings())
+    api.client.close()
+    api.client = httpx.Client(base_url=api.settings.wisconsin_site_base, transport=httpx.MockTransport(handler))
+    try:
+        if stage == "index":
+            assert api.fetch_year_bills(2025)[0]["billNum"] == "AB1"
+        else:
+            assert api.fetch_bill_detail(paths["detail"], {
+                "billNum": "AB1", "currentVersionPath": paths["text"],
+            })["bill"] == "AB1"
+    finally:
+        api.close()
+    assert counts[paths[stage]] == 2
+    assert delays == ([1.0] if failure == "timeout" else [2.0])
+
+
+def test_wisconsin_does_not_retry_access_denied() -> None:
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(403, request=request)
+
+    api = WisconsinApiClient(get_settings())
+    api.client.close()
+    api.client = httpx.Client(base_url=api.settings.wisconsin_site_base, transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            api.fetch_year_bills(2025)
+    finally:
+        api.close()
+    assert len(requests) == 1
 
 
 def test_fetch_year_bills_reads_wisconsin_proposal_index() -> None:

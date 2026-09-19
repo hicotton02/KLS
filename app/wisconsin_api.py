@@ -9,6 +9,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from app.http_documents import absolute_url, fetch_document_text
+from app.http_retry import get_with_retries
 from app.settings import Settings
 from app.text_utils import clean_text
 
@@ -60,7 +61,7 @@ class WisconsinApiClient:
         self.client.close()
 
     def fetch_year_bills(self, year: int) -> list[dict[str, Any]]:
-        response = self.client.get(f"/{year}/related/proposals")
+        response = get_with_retries(self.client, f"/{year}/related/proposals")
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -99,7 +100,7 @@ class WisconsinApiClient:
         return sorted(items, key=lambda item: _sort_bill_key(str(item["billNum"])))
 
     def fetch_bill_detail(self, detail_path: str, item: dict[str, Any] | None = None) -> dict[str, Any]:
-        response = self.client.get(detail_path)
+        response = get_with_retries(self.client, detail_path)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -113,7 +114,7 @@ class WisconsinApiClient:
         proposal_title = bill_num
         sponsor = ""
         if proposal_url:
-            proposal_response = self.client.get(proposal_url)
+            proposal_response = get_with_retries(self.client, proposal_url)
             proposal_response.raise_for_status()
             proposal_soup = BeautifulSoup(proposal_response.text, "html.parser")
             proposal_title = self._proposal_title(proposal_soup, bill_num)

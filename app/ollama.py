@@ -109,7 +109,31 @@ class OllamaClient:
             lawmakers=lawmakers,
             transcript=transcript,
         )
-        parsed = self._run_json_prompt(prompt, temperature=0.0, top_p=0.25, num_predict=10000)
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["statements"],
+            "properties": {
+                "statements": {
+                    "type": "array",
+                    "maxItems": len(lawmakers),
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["lawmaker_name", "reason_summary", "evidence_text", "start_seconds"],
+                        "properties": {
+                            "lawmaker_name": {"type": "string", "enum": lawmakers},
+                            "reason_summary": {"type": "string", "maxLength": 700},
+                            "evidence_text": {"type": "string", "maxLength": 1200},
+                            "start_seconds": {"type": "integer", "minimum": 0},
+                        },
+                    },
+                },
+            },
+        }
+        parsed = self._run_json_prompt(
+            prompt, temperature=0.0, top_p=0.25, num_predict=10000, schema=schema,
+        )
         statements = parsed.get("statements") if isinstance(parsed, dict) else []
         if not isinstance(statements, list):
             return []
@@ -143,6 +167,7 @@ class OllamaClient:
         temperature: float,
         top_p: float,
         num_predict: int,
+        schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         response = self._next_client().post(
             "/api/generate",
@@ -150,7 +175,7 @@ class OllamaClient:
                 "model": self.settings.ollama_model,
                 "prompt": prompt,
                 "stream": False,
-                "format": "json",
+                "format": schema if schema is not None else "json",
                 "think": False,
                 "options": {
                     "temperature": temperature,
@@ -161,6 +186,8 @@ class OllamaClient:
         )
         response.raise_for_status()
         payload = response.json()
+        if schema is not None and payload.get("done_reason") == "length":
+            raise ValueError("Structured response exceeded its output limit; no statements accepted")
         content = payload.get("response", "").strip()
         return json.loads(content)
 

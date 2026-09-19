@@ -1,6 +1,8 @@
 import socket
 from types import SimpleNamespace
 
+import pytest
+
 from app.ollama import OllamaClient
 
 
@@ -49,6 +51,7 @@ def test_json_prompt_disables_model_thinking() -> None:
     assert result == {"ok": True}
     assert transport.payload is not None
     assert transport.payload["think"] is False
+    assert transport.payload["format"] == "json"
 
 
 def test_vote_explanation_prompt_has_room_for_complete_json() -> None:
@@ -68,3 +71,29 @@ def test_vote_explanation_prompt_has_room_for_complete_json() -> None:
     assert transport.payload is not None
     assert transport.payload["options"]["num_predict"] == 10000
     assert "at most one statement per lawmaker" in str(transport.payload["prompt"])
+    statements = transport.payload["format"]["properties"]["statements"]
+    assert statements["maxItems"] == 1
+    fields = statements["items"]["properties"]
+    assert fields["lawmaker_name"]["enum"] == ["Pat Example"]
+    assert fields["reason_summary"]["maxLength"] == 700
+    assert fields["evidence_text"]["maxLength"] == 1200
+
+
+@pytest.mark.parametrize("content,done_reason", [
+    ('{"statements": [{"evidence_text": "repeated', "length"),
+    ('{"statements": []}', "length"),
+    ('{"statements": [{"evidence_text": "repeated', "stop"),
+])
+def test_incomplete_explanation_response_is_not_accepted(content, done_reason) -> None:
+    client = object.__new__(OllamaClient)
+    client.settings = SimpleNamespace(ollama_model="test-model")
+    client.clients = [SimpleNamespace(post=lambda *_args, **_kwargs: SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {"response": content, "done_reason": done_reason},
+    ))]
+    client._client_index = 0
+    with pytest.raises(ValueError):
+        client.extract_vote_explanations(
+            bill_num="SF0101", bill_title="Test", lawmakers=["Pat Example"],
+            transcript="[100] I vote no because the wording is unclear.",
+        )
