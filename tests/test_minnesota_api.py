@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import httpx
+import pytest
+from bs4 import BeautifulSoup
 
-from app.minnesota_api import MinnesotaApiClient
+from app.minnesota_api import MinnesotaApiClient, parse_minnesota_date
 from app.settings import get_settings
+from app.status import classify_bill_status
 
 
 def test_fetch_year_bills_filters_selected_year_and_sessions() -> None:
@@ -172,6 +175,63 @@ def test_fetch_bill_detail_and_text_extract_bill_content() -> None:
     assert detail["lastActionDate"] == "2026-05-01"
     assert detail["signedDate"] == "2026-05-01"
     assert detail["chapter"] == "12"
+    assert detail["enrolledNumber"] == ""
     assert detail["introduced"].endswith("/versions/0/")
     assert detail["currentVersionPath"].endswith("/versions/2/")
     assert "Section 1. This bill changes insurance applications." in bill_text
+
+
+@pytest.mark.parametrize("value,expected", [("Final Actions", ""), ("2026-02-30", ""),
+                                           ("2026-02-17", "2026-02-17"), ("03/25/26", "2026-03-25")])
+def test_only_real_dates_are_returned(value, expected):
+    assert parse_minnesota_date(value) == expected
+
+
+@pytest.mark.parametrize("version", ["Introduction", "Introduced", "1st Engrossment", "2nd Engrossment"])
+def test_text_versions_do_not_prove_passage(version):
+    assert classify_bill_status("", "Referred to committee", "", "", version)["outcome"] == "active"
+
+
+def test_actual_enrollment_and_presentment_still_show_passage():
+    assert classify_bill_status("", "", "", "", "SEA No. 0027")["outcome"] == "passed"
+    assert classify_bill_status("", "Presented to Governor 03/25/26", "", "", "")["outcome"] == "passed"
+
+
+def test_senate_first_table_keeps_all_actions_and_does_not_invent_final_date():
+    api = MinnesotaApiClient(get_settings())
+    try:
+        rows = api._action_rows(BeautifulSoup('''
+          <div id="chronological-tab-pane"><table>
+          <thead><tr><th>Senate Actions</th><th>House Actions</th></tr></thead><tbody>
+          <tr><th colspan="2">02/17/2026</th></tr><tr><td class="senate">
+          <div class="row"><div class="col">Introduction and first reading</div><div class="action_item col">Intro</div></div>
+          <div class="row"><div class="col">Referred to Capital Investment</div></div>
+          </td><td class="house"></td></tr>
+          <tr><th colspan="2">Final Actions</th></tr><tr><td class="senate">See HF2484</td><td></td></tr>
+          </tbody></table></div>''', "html.parser"))
+    finally:
+        api.close()
+    assert [r["statusMessage"] for r in rows] == ["Introduction and first reading", "Referred to Capital Investment", "See HF2484"]
+    assert all(r["location"] == "Senate" for r in rows)
+    assert rows[0]["statusDate"] == "2026-02-17"
+    assert rows[-1]["statusDate"] == ""
+
+
+def test_undated_referral_cannot_replace_later_dated_final_action():
+    api = MinnesotaApiClient(get_settings())
+    api.client.close()
+    html = '''<div id="chronological-tab-pane"><table><tbody>
+      <tr><th colspan="2">05/05/2026</th></tr><tr><td class="senate">
+      Rule 45; subst. General Orders HF3709, SF indefinitely postponed</td><td></td></tr>
+      <tr><th colspan="2">Final Actions</th></tr><tr><td class="senate">
+      Referred to Rules and Administration for comparison with HF3709</td><td></td></tr>
+      </tbody></table></div>'''
+    api.client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, text=html, request=request)))
+    try:
+        detail = api.fetch_bill_detail("https://www.revisor.mn.gov/bills/94/2026/0/SF/3794/")
+    finally:
+        api.close()
+    assert detail["lastActionDate"] == "2026-05-05"
+    assert "indefinitely postponed" in detail["lastAction"]
+    assert classify_bill_status(detail["billStatus"], detail["lastAction"], detail["signedDate"],
+                                detail["chapter"], detail["enrolledNumber"])["label"] == "Did Not Pass"

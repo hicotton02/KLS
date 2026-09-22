@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 
 def classify_bill_status(
     bill_status: str | None,
@@ -12,6 +14,9 @@ def classify_bill_status(
     raw_action = (last_action or "").strip().lower()
     chapter_no = (chapter_no or "").strip()
     enrolled_no = (enrolled_no or "").strip()
+    # Some sources supply a text-version label, not an enrolled act number.
+    if re.search(r"introduc|engross|amend|substitut|prefil", enrolled_no, re.I):
+        enrolled_no = ""
 
     if "mirror bill" in raw_action:
         return {
@@ -53,6 +58,8 @@ def classify_bill_status(
         "signed by the speaker of the house",
         "signed by the president of the senate",
         "sent for executive approval",
+        "presented to governor",
+        "presentment date",
     ]
     if "enrolled" in raw_status or enrolled_no or any(marker in raw_action for marker in passed_markers):
         return {

@@ -93,14 +93,14 @@
       </ul>
       {% endif %}
     {% else %}
-      <p>The plain English breakdown is still being put together. The official documents below are already here.</p>
+      <p>{{ content_quality.notice }}</p>
     {% endif %}
   </article>
 
   <aside class="panel">
     <h2>Official Links</h2>
     <ul class="link-list">
-      <li><a href="{{ official_links.official_page }}" target="_blank" rel="noopener">{{ jurisdiction.source_name }} bill page</a></li>
+      {% if official_links.official_page %}<li><a href="{{ official_links.official_page }}" target="_blank" rel="noopener">{{ jurisdiction.source_name }} bill page</a></li>{% endif %}
       {% if official_links.current_version %}<li><a href="{{ official_links.current_version }}" target="_blank" rel="noopener">Current bill version</a></li>{% endif %}
       {% if official_links.introduced %}<li><a href="{{ official_links.introduced }}" target="_blank" rel="noopener">Introduced version</a></li>{% endif %}
       {% if official_links.digest %}<li><a href="{{ official_links.digest }}" target="_blank" rel="noopener">Official digest</a></li>{% endif %}

@@ -1,3 +1,5 @@
+import json
+
 import app.db as db
 from app.db import (
     POSTGRES_SCHEMA_METADATA_NAME,
@@ -231,6 +233,12 @@ def test_jurisdiction_rollups_and_recent_bills_use_bounded_queries() -> None:
         connection.commit()
 
     rollups = get_jurisdiction_rollups(["wy", "co", "missing"])
+    with connect() as connection:
+        connection.execute("UPDATE bills SET interpretation_json = ? WHERE state = 'wy'", (json.dumps({
+            "fact_check_status": "validated", "one_sentence_summary": "This bill pays for roof repairs.",
+            "what_it_does": ["Provides grants to school districts for leaking roofs."],
+        }),))
+        connection.commit()
     recent = list_recent_bills(limit=2)
 
     assert rollups["wy"] == {

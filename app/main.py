@@ -45,6 +45,7 @@ from app.db import (
     init_db,
     list_available_tags,
     list_bill_amendments,
+    list_bill_evidence_keys,
     list_bill_roll_calls,
     list_bill_vote_explanations,
     list_bills,
@@ -58,6 +59,7 @@ from app.db import (
     normalize_special_session,
     search_bills,
 )
+from app.content_quality import assess_bill_content
 from app.federal_api import congress_bill_number_part, congress_bill_public_url
 from app.jurisdictions import (
     Jurisdiction,
@@ -705,14 +707,17 @@ def _build_bill_seo(
     bill: dict[str, object],
     interpretation: dict[str, object],
     official_links: dict[str, str | None],
+    *,
+    has_vote_record: bool = False,
 ) -> dict[str, object]:
+    quality = assess_bill_content(bill, has_vote_record=has_vote_record)
     canonical_url = _bill_canonical_url(jurisdiction, bill)
     summary = str(interpretation.get("one_sentence_summary") or "").strip()
     catch_title = str(bill.get("catch_title") or bill.get("bill_title") or bill.get("bill_num") or "").strip()
     title = _clip_text(f"{bill['bill_num']} {catch_title} | {jurisdiction.name} Bill | {settings.app_title}", limit=70)
     description = _clip_text(
         summary
-        or f"Official text, status, and plain-English summary for {jurisdiction.name} bill {bill['bill_num']}."
+        or f"Available records for {jurisdiction.name} bill {bill['bill_num']}."
     )
     date_modified = format_date(
         str(bill.get("source_synced_at") or bill.get("updated_at") or bill.get("last_action_date") or "")
@@ -751,7 +756,7 @@ def _build_bill_seo(
         "title": title,
         "description": description,
         "canonical_url": canonical_url,
-        "robots": DEFAULT_ROBOTS,
+        "robots": DEFAULT_ROBOTS if quality["indexable"] else NOINDEX_ROBOTS,
         "og_type": "article",
         "json_ld": [
             _breadcrumb_json_ld(
@@ -809,6 +814,7 @@ def _jurisdiction_sitemap_entries(jurisdiction: Jurisdiction) -> dict[str, str |
     state_url = _absolute_url(state_path)
     latest_year = _latest_year(years)
     entries: dict[str, str | None] = {state_url: None}
+    evidence_keys = list_bill_evidence_keys(jurisdiction.state_code)
 
     for year in years:
         bills = list_bills(jurisdiction.state_code, year)
@@ -817,6 +823,9 @@ def _jurisdiction_sitemap_entries(jurisdiction: Jurisdiction) -> dict[str, str |
             entries[year_url] = None
         current_lastmod = entries.get(year_url)
         for bill in bills:
+            key = (int(bill["year"]), normalize_special_session(bill.get("special_session_value")), str(bill["bill_num"]))
+            if not assess_bill_content(bill, has_vote_record=key in evidence_keys)["indexable"]:
+                continue
             bill_lastmod = _bill_sitemap_lastmod(bill)
             entries[_bill_canonical_url(jurisdiction, bill)] = bill_lastmod
             if bill_lastmod and (not current_lastmod or bill_lastmod > current_lastmod):
@@ -915,6 +924,7 @@ def _bill_summary_json(jurisdiction: Jurisdiction, bill: dict[str, object]) -> d
     if not isinstance(interpretation, dict):
         interpretation = {}
     tags = [str(item or "").strip() for item in bill.get("bill_tags_json") or [] if str(item or "").strip()]
+    quality = assess_bill_content(bill)
     return {
         "area_slug": jurisdiction.slug,
         "area_name": jurisdiction.name,
@@ -932,9 +942,10 @@ def _bill_summary_json(jurisdiction: Jurisdiction, bill: dict[str, object]) -> d
         "last_action": bill.get("last_action"),
         "last_action_date": bill.get("last_action_date"),
         "updated_at": bill.get("updated_at"),
-        "plain_language_title": interpretation.get("plain_language_title"),
-        "summary": interpretation.get("one_sentence_summary"),
+        "plain_language_title": interpretation.get("plain_language_title") if quality["summary_ready"] else None,
+        "summary": interpretation.get("one_sentence_summary") if quality["summary_ready"] else None,
         "fact_check_status": interpretation.get("fact_check_status"),
+        "content_quality": quality,
         "tags": [{"value": tag, "label": tag_label(tag)} for tag in tags],
         "legacy_href": _bill_href(jurisdiction, bill),
     }
@@ -1267,6 +1278,9 @@ def _render_bill_detail(
         bill_num,
         special_session_value=special_session,
     )
+    quality = assess_bill_content(bill, has_vote_record=bool(roll_calls))
+    if not quality["summary_ready"]:
+        interpretation = {}
     actions = bill.get("bill_actions_json") or []
     actions = sorted(actions, key=lambda item: item.get("statusDate", ""), reverse=True)
     related_relationships = []
@@ -1295,13 +1309,14 @@ def _render_bill_detail(
             "bill": bill,
             "official_links": official_links,
             "interpretation": interpretation,
+            "content_quality": quality,
             "bill_tags": bill_tags,
             "amendments": amendments,
             "roll_calls": [_roll_call_json(item) for item in roll_calls],
             "actions": actions,
             "related_relationships": related_relationships,
             "back_href": _bill_back_href(jurisdiction, year),
-            "seo": _build_bill_seo(jurisdiction, bill, interpretation, official_links),
+            "seo": _build_bill_seo(jurisdiction, bill, interpretation, official_links, has_vote_record=bool(roll_calls)),
         },
     )
 
@@ -1776,6 +1791,12 @@ def api_bill_detail(
             )
 
     raw_sync_status = get_sync_status(jurisdiction.state_code or "")
+    has_votes = any(sum(int(call.get(field) or 0) for field in (
+        "yes_count", "no_count", "absent_count", "excused_count", "conflict_count"
+    )) > 0 for call in roll_calls) or bool(vote_explanations)
+    quality = assess_bill_content(bill, has_vote_record=has_votes)
+    if not quality["summary_ready"]:
+        interpretation = {"fact_check_status": interpretation.get("fact_check_status")}
     return _public_json_response(
         {
             "jurisdiction": _jurisdiction_json(
@@ -1784,6 +1805,7 @@ def api_bill_detail(
             ),
             "bill": {
                 **_bill_summary_json(jurisdiction, bill),
+                "content_quality": quality,
                 "status_explainer": bill.get("status_explainer"),
                 "signed_date": bill.get("signed_date"),
                 "effective_date": bill.get("effective_date"),

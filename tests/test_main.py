@@ -125,6 +125,7 @@ def _seed_state_bill(
             "interpretation_json": {
                 "plain_language_title": catch_title,
                 "one_sentence_summary": f"{catch_title} summary.",
+                "fact_check_status": "validated",
                 "what_it_does": [f"{catch_title} changes how the state handles the issue."],
                 "who_it_affects": ["People named in the bill."],
                 "terms_to_know": [],

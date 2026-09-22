@@ -31,6 +31,16 @@ export type Jurisdiction = {
 
 export type BillTag = { value: string; label: string };
 
+export type ContentQuality = {
+  summary_ready: boolean;
+  indexable: boolean;
+  ads_eligible: boolean;
+  featured: boolean;
+  has_source: boolean;
+  state: "summary" | "vote_record" | "reference";
+  notice: string;
+};
+
 export type BillSummary = {
   area_slug: string;
   area_name: string;
@@ -51,6 +61,7 @@ export type BillSummary = {
   plain_language_title: string | null;
   summary: string | null;
   fact_check_status: string | null;
+  content_quality?: ContentQuality;
   tags: BillTag[];
   legacy_href: string;
 };
@@ -95,6 +106,7 @@ export type Interpretation = {
   fact_check_status?: string;
   fact_check_result?: string;
   fact_check_notes?: string[];
+  correction?: { date: string; source_url: string; note: string };
 };
 
 export type RollCallMember = {

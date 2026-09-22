@@ -21,6 +21,7 @@ export const metadata: Metadata = {
 
 export default async function Home() {
   const overview = await getOverview();
+  const recentBills = overview.recent_bills.filter((bill) => bill.content_quality?.featured);
   const states = overview.jurisdictions.filter((area) => area.kind === "state");
   const federal = overview.jurisdictions.find((area) => area.kind === "federal");
   const latestScanArea = overview.jurisdictions.reduce<(typeof overview.jurisdictions)[number] | null>((latest, area) => {
@@ -113,12 +114,12 @@ export default async function Home() {
             <h2 id="recent-title">Recently updated bills</h2>
           </div>
           <span className="trust-note">
-            <ShieldCheck size={17} aria-hidden="true" /> Source checked
+            <ShieldCheck size={17} aria-hidden="true" /> Source-linked explanations
           </span>
         </div>
-        <BillList bills={overview.recent_bills} emptyMessage="No recent bill updates are available." />
+        <BillList bills={recentBills} emptyMessage="No recent explanations are ready. You can still browse the official records by state." />
       </section>
-      {overview.recent_bills.length ? <div className="page-width"><DisplayAd /></div> : null}
+      {recentBills.length && recentBills.every((bill) => bill.content_quality?.ads_eligible) ? <div className="page-width"><DisplayAd /></div> : null}
     </main>
   );
 }

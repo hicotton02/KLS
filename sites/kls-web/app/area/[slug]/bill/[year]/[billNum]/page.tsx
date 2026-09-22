@@ -29,8 +29,8 @@ export async function generateMetadata({ params, searchParams }: { params: Route
   const { slug, year, billNum, specialSession, data } = await routeData(params, searchParams);
   if (!data) return { title: "Bill Not Found", robots: { index: false, follow: false } };
 
-  const plainTitle = data.interpretation.plain_language_title || data.bill.catch_title || data.bill.bill_title || "Bill record";
-  const summary = data.interpretation.one_sentence_summary || data.bill.summary || `Official status, source text, and a plain-English summary for ${data.jurisdiction.name} bill ${data.bill.bill_num}.`;
+  const plainTitle = data.bill.plain_language_title || data.bill.catch_title || data.bill.bill_title || "Bill record";
+  const summary = data.bill.summary || `Available records for ${data.jurisdiction.name} bill ${data.bill.bill_num}. A plain-English explanation is not ready.`;
   const title = `${data.bill.bill_num}: ${plainTitle}`;
   const canonical = billPageHref(slug, year, billNum, specialSession);
 
@@ -38,7 +38,7 @@ export async function generateMetadata({ params, searchParams }: { params: Route
     title,
     description: summary,
     alternates: { canonical },
-    robots: { index: true, follow: true },
+    robots: { index: data.bill.content_quality?.indexable === true, follow: true },
     openGraph: { type: "article", url: canonical, title: `${title} | ${SITE_NAME}`, description: summary },
   };
 }
@@ -63,7 +63,8 @@ export default async function BillPage({ params, searchParams }: { params: Route
   const { slug, year, billNum, specialSession, data } = await routeData(params, searchParams);
   if (!data) notFound();
 
-  const interpretation = data.interpretation;
+  const quality = data.bill.content_quality;
+  const interpretation: Interpretation = quality?.summary_ready ? data.interpretation : {};
   const voteExplanations = data.vote_explanations ?? [];
   const explanationScan = data.vote_explanation_scan;
   const sourceLinks = Object.entries(data.official_links).filter((entry): entry is [string, string] => Boolean(entry[1]));
@@ -116,8 +117,9 @@ export default async function BillPage({ params, searchParams }: { params: Route
 
       <section className="summary-band" aria-labelledby="summary-title">
         <div className="summary-main">
-          <p className="eyebrow">In one sentence</p>
-          <h2 id="summary-title">{interpretation.one_sentence_summary || data.bill.summary || "A plain-English summary is not available yet."}</h2>
+          <p className="eyebrow">{quality?.summary_ready ? "In one sentence" : "Bill record"}</p>
+          <h2 id="summary-title">{interpretation.one_sentence_summary || quality?.notice || "A plain-English explanation is not ready."}</h2>
+          {interpretation.correction ? <p className="source-note">Correction: {interpretation.correction.note} <a href={interpretation.correction.source_url} target="_blank" rel="noreferrer">See source</a>.</p> : null}
           {items(interpretation.what_it_does).length ? (
             <div className="detail-block">
               <h3>What it does</h3>
@@ -136,7 +138,7 @@ export default async function BillPage({ params, searchParams }: { params: Route
         </aside>
       </section>
 
-      <section className="detail-columns">
+      {quality?.summary_ready ? <section className="detail-columns">
         <div className="detail-section">
           <h2>Who it affects</h2>
           {items(interpretation.who_it_affects).length ? <ul>{items(interpretation.who_it_affects).map((item) => <li key={item}>{item}</li>)}</ul> : <p>Not clearly identified in the stored source.</p>}
@@ -145,7 +147,7 @@ export default async function BillPage({ params, searchParams }: { params: Route
           <h2>Limits and unknowns</h2>
           {items(interpretation.limits_and_unknowns).length ? <ul className="warning-list">{items(interpretation.limits_and_unknowns).map((item) => <li key={item}><AlertTriangle size={17} aria-hidden="true" /><span>{item}</span></li>)}</ul> : <p>No additional limitations are listed.</p>}
         </div>
-      </section>
+      </section> : null}
 
       {interpretation.terms_to_know?.length ? (
         <section className="content-section terms-section" aria-labelledby="terms-title">
@@ -155,11 +157,12 @@ export default async function BillPage({ params, searchParams }: { params: Route
       ) : null}
 
       <section className="content-section" aria-labelledby="sources-title">
-        <div className="section-heading"><div><p className="eyebrow">Official record</p><h2 id="sources-title">Sources</h2></div><span className="trust-note"><CheckCircle2 size={17} aria-hidden="true" /> {interpretation.fact_check_status === "validated" ? "Validated" : "Source attached"}</span></div>
+        <div className="section-heading"><div><p className="eyebrow">Official record</p><h2 id="sources-title">Sources</h2></div>{sourceLinks.length ? <span className="trust-note"><CheckCircle2 size={17} aria-hidden="true" /> {quality?.summary_ready ? "Source checked" : "Official links"}</span> : null}</div>
+        {!sourceLinks.length ? <p>No official source link is available for this record yet.</p> : null}
         <div className="source-grid">
           {sourceLinks.map(([key, url]) => <a href={url} target="_blank" rel="noreferrer" key={key}><FileText size={19} aria-hidden="true" /><span>{linkLabels[key] ?? key}</span><ExternalLink size={15} aria-hidden="true" /></a>)}
         </div>
-        {data.bill.official_summary_text ? <div className="official-text"><h3>Official summary</h3><p>{data.bill.official_summary_text}</p></div> : null}
+        {data.bill.official_summary_text && sourceLinks.length ? <details className="official-text"><summary>Read the official summary</summary><p>{data.bill.official_summary_text}</p></details> : null}
       </section>
 
       {slug === "wyoming" && data.roll_calls?.length ? (
@@ -288,7 +291,7 @@ export default async function BillPage({ params, searchParams }: { params: Route
           })}</div>
         </section>
       ) : null}
-      {interpretation.one_sentence_summary && interpretation.fact_check_status === "validated" ? <DisplayAd /> : null}
+      {quality?.ads_eligible ? <DisplayAd /> : null}
     </main>
   );
 }

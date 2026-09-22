@@ -8,6 +8,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from app.http_documents import absolute_url
+from app.http_retry import get_source_with_retries
 from app.settings import Settings
 from app.text_utils import html_to_text, pdf_bytes_to_text
 
@@ -29,14 +30,12 @@ def parse_minnesota_date(value: str | None) -> str:
     raw = str(value or "").strip()
     if not raw:
         return ""
-    if "-" in raw and len(raw) >= 10:
-        return raw[:10]
-    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%m/%d/%Y %I:%M %p"):
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%m/%d/%Y %I:%M %p"):
         try:
             return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
         except ValueError:
             continue
-    return raw
+    return ""
 
 
 def parse_minnesota_special_session(label: str | None) -> int:
@@ -79,7 +78,7 @@ class MinnesotaApiClient:
         self.client.close()
 
     def fetch_year_bills(self, year: int) -> list[dict[str, Any]]:
-        response = self.client.get("/bills/", params={"year": str(year)})
+        response = get_source_with_retries(self.client, "/bills/", params={"year": str(year)})
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -135,7 +134,7 @@ class MinnesotaApiClient:
         )
 
     def fetch_bill_detail(self, detail_path: str) -> dict[str, Any]:
-        response = self.client.get(detail_path)
+        response = get_source_with_retries(self.client, detail_path)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -145,7 +144,11 @@ class MinnesotaApiClient:
         authors = self._author_names(soup)
         actions = self._action_rows(soup)
         versions = self._version_rows(soup, str(response.url))
-        latest_action = actions[-1] if actions else {"statusDate": "", "statusMessage": "", "location": ""}
+        # The source groups undated referrals under "Final Actions" after dated rows.
+        # That display position does not make them the most recent action.
+        latest_action = max(enumerate(actions), key=lambda pair: (pair[1]["statusDate"], pair[0]))[1] if actions else {
+            "statusDate": "", "statusMessage": "", "location": ""
+        }
         current_version = versions[-1] if versions else {}
         introduced_version = versions[0] if versions else {}
         long_description_url = self._named_link_url(soup, "Long Description")
@@ -181,7 +184,10 @@ class MinnesotaApiClient:
             "signedDate": signed_date,
             "effectiveDate": "",
             "chapter": chapter_no,
-            "enrolledNumber": str(current_version.get("version") or ""),
+            "enrolledNumber": (
+                str(current_version.get("version") or "")
+                if "enroll" in str(current_version.get("version") or "").lower() else ""
+            ),
             "sponsorStringHouse": sponsor if bill_num.startswith("HF") else None,
             "sponsorStringSenate": sponsor if bill_num.startswith("SF") else None,
             "introduced": str(introduced_version.get("document_url") or "") or None,
@@ -201,7 +207,7 @@ class MinnesotaApiClient:
     def fetch_public_document_text(self, url: str | None) -> str:
         if not url:
             return ""
-        response = self.client.get(url)
+        response = get_source_with_retries(self.client, url)
         response.raise_for_status()
         content_type = response.headers.get("content-type", "").lower()
         if str(response.url).lower().endswith(".pdf") or "pdf" in content_type:
@@ -316,6 +322,14 @@ class MinnesotaApiClient:
 
         rows: list[dict[str, str]] = []
         current_date = ""
+        chambers = ["House", "Senate"]
+        headers = chronological.select("thead th")
+        named_chambers = [
+            "Senate" if "senate" in th.get_text().lower() else "House"
+            for th in headers if re.search(r"house|senate", th.get_text(), re.I)
+        ]
+        if len(named_chambers) == 2:
+            chambers = named_chambers
         for row in chronological.find_all("tr"):
             heading = row.find("th", colspan="2")
             if heading is not None and not row.find("td"):
@@ -326,17 +340,23 @@ class MinnesotaApiClient:
             if len(cells) != 2:
                 continue
 
-            for chamber, cell in (("House", cells[0]), ("Senate", cells[1])):
-                status_message = self._action_message(cell)
-                if not status_message:
-                    continue
-                rows.append(
-                    {
-                        "statusDate": current_date,
-                        "location": chamber,
-                        "statusMessage": status_message,
-                    }
-                )
+            for chamber, cell in zip(chambers, cells):
+                classes = cell.get("class", [])
+                if "senate" in classes:
+                    chamber = "Senate"
+                elif "house" in classes:
+                    chamber = "House"
+                # A cell can contain several actions; keep referrals as well as readings.
+                messages = cell.select("div.row > div.col:not(.action_item)") or [cell]
+                for message in messages:
+                    status_message = self._action_message(message)
+                    if not status_message:
+                        continue
+                    action_date = current_date
+                    if not action_date:
+                        match = re.search(r"\b\d{1,2}/\d{1,2}/(?:\d{4}|\d{2})\b", status_message)
+                        action_date = parse_minnesota_date(match.group() if match else "")
+                    rows.append({"statusDate": action_date, "location": chamber, "statusMessage": status_message})
         return rows
 
     @staticmethod

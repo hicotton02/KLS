@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.settings import get_settings
+from app.content_corrections import apply_content_corrections
+from app.content_quality import assess_bill_content
 from app.text_utils import iso_now
 from app.wyoming_media_sources import normalize_wyoming_media_url, wyoming_media_url_variants
 
@@ -444,6 +446,11 @@ BILL_LIST_COLUMNS = [
     "effective_date",
     "chapter_no",
     "enrolled_no",
+    "introduced_path",
+    "digest_path",
+    "summary_path",
+    "current_version_path",
+    "source_hash",
     "interpretation_json",
     "bill_tags_json",
     "source_synced_at",
@@ -759,7 +766,7 @@ def _parse_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     _parse_json_field(parsed, "bill_actions_json", default=[])
     _parse_json_field(parsed, "interpretation_json", default=None)
     _parse_json_field(parsed, "bill_tags_json", default=[])
-    return parsed
+    return apply_content_corrections(parsed)
 
 
 def _parse_amendment_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -946,12 +953,32 @@ def list_recent_bills(limit: int = 8) -> list[dict[str, Any]]:
     sql = f"""
         SELECT {', '.join(BILL_LIST_COLUMNS)}
         FROM bills
-        ORDER BY last_action_date DESC, updated_at DESC, year DESC, bill_num ASC
+        WHERE interpretation_json LIKE ?
+        ORDER BY CASE WHEN SUBSTR(last_action_date, 5, 1) = '-'
+                          AND SUBSTR(last_action_date, 8, 1) = '-'
+                      THEN last_action_date ELSE '' END DESC,
+                 updated_at DESC, year DESC, bill_num ASC
         LIMIT ?
     """
     with connect() as connection:
-        rows = connection.execute(sql, (safe_limit,)).fetchall()
-    return [_parse_row(row) for row in rows if row is not None]
+        rows = connection.execute(sql, ("%validated%", max(safe_limit * 20, 500))).fetchall()
+    parsed = [_parse_row(row) for row in rows if row is not None]
+    return [bill for bill in parsed if assess_bill_content(bill)["featured"]][:safe_limit]
+
+
+def list_bill_evidence_keys(state: str) -> set[tuple[int, int, str]]:
+    if state != "wy":
+        return set()
+    with connect() as connection:
+        rows = connection.execute(
+            """SELECT year, special_session_key, bill_num FROM bill_roll_calls
+               WHERE state = ? AND yes_count + no_count + absent_count + excused_count + conflict_count > 0
+               UNION
+               SELECT year, special_session_key, bill_num FROM bill_vote_explanations
+               WHERE state = ? AND review_status IN ('publishable', 'curated')
+                 AND source_url <> '' AND reason_summary <> ''""", (state, state),
+        ).fetchall()
+    return {(int(row["year"]), int(row["special_session_key"]), str(row["bill_num"])) for row in rows}
 
 
 def get_bill(state: str, year: int, bill_num: str, special_session_value: int | None = None) -> dict[str, Any] | None:
@@ -1216,7 +1243,7 @@ def get_existing_index(years: list[int], state: str = "wy") -> dict[tuple[int, i
 
 
 def upsert_bill(payload: dict[str, Any]) -> None:
-    serializable = dict(payload)
+    serializable = apply_content_corrections(dict(payload))
     serializable["special_session_key"] = normalize_special_session(payload.get("special_session_value"))
     serializable.setdefault("bill_tags_json", [])
     serializable.setdefault("search_blob", "")

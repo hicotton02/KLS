@@ -32,6 +32,11 @@ export default function EditorialStandardsPage() {
         <p>Missing text, unclear wording, and incomplete records should be stated plainly. We do not fill gaps with a guess.</p>
       </section>
       <section>
+        <h2>What a source check means</h2>
+        <p>We use automated drafting and checks to compare explanations with the official record. These checks can miss mistakes, especially changes shown with crossed-out text. A source check is not a claim that a person reviewed every sentence.</p>
+        <p>When a source changes or an explanation is incomplete, we keep the available record but stop presenting the old explanation as current. Useful voting records remain available.</p>
+      </section>
+      <section>
         <h2>Fix supported mistakes</h2>
         <p>Correction requests are checked against the source record. Supported corrections are made without charging anyone or changing coverage for an advertiser. <Link href="/corrections">Report a problem</Link>.</p>
       </section>

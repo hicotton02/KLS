@@ -148,7 +148,7 @@ export default async function AreaPage({ params, searchParams }: { params: Route
         </div>
         <BillList bills={data.bills} emptyMessage="No bills matched those filters." />
       </section>
-      {data.bills.length ? <DisplayAd /> : null}
+      {data.bills.length && data.bills.every((bill) => bill.content_quality?.ads_eligible) ? <DisplayAd /> : null}
     </main>
   );
 }

@@ -230,13 +230,17 @@ test("manual ads are eligible only on content pages and still wait for browser c
   process.env.KLS_ADSENSE_PUBLISHER_ID = "pub-4907492213987533";
   process.env.KLS_ADSENSE_DISPLAY_SLOT = "8149837735";
   try {
-    for (const path of ["/", "/area/wyoming", "/area/wyoming/bill/2026/SF0001"]) {
+    for (const path of ["/", "/area/wyoming/bill/2026/SF0001"]) {
       const response = await render(path, "https://www.keepinglawsimple.org");
       assert.equal(response.status, 200, path);
       const html = await response.text();
       assert.match(html, /class="display-ad-anchor"/, path);
       assert.doesNotMatch(html, /<script[^>]+adsbygoogle|<ins[^>]+adsbygoogle/, path);
     }
+    const areaData = await (await fetch(`${process.env.KLS_API_BASE_URL || "https://www.keepinglawsimple.org"}/api/v1/areas/wyoming`)).json();
+    const areaHtml = await (await render("/area/wyoming", "https://www.keepinglawsimple.org")).text();
+    assert.equal(/class="display-ad-anchor"/.test(areaHtml),
+      areaData.bills.length > 0 && areaData.bills.every(bill => bill.content_quality?.ads_eligible === true));
     for (const path of ["/about", "/advertising", "/privacy", "/contact", "/search", "/missing-page", "/area/wyoming/vote-explanations", "/area/wyoming/legislators/wy-2093"]) {
       const html = await (await render(path, "https://www.keepinglawsimple.org")).text();
       assert.doesNotMatch(html, /class="display-ad-anchor"/, path);
