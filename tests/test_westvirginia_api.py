@@ -1,9 +1,90 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from app.settings import get_settings
 from app.westvirginia_api import WestVirginiaApiClient
+
+
+def test_detail_retries_temporary_page_without_bill_identity(monkeypatch) -> None:
+    api = WestVirginiaApiClient(get_settings())
+    api.client.close()
+    calls = []
+    sleeps = []
+    monkeypatch.setattr("app.westvirginia_api.time.sleep", sleeps.append)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        page = "<h1>Temporarily unavailable</h1>" if len(calls) == 1 else "<h3>Senate Bill 991</h3>"
+        return httpx.Response(200, text=page)
+
+    api.client = httpx.Client(base_url=api.settings.west_virginia_site_base, transport=httpx.MockTransport(handler))
+    try:
+        detail = api.fetch_bill_detail("/Bill_Status/Bills_history.cfm?input=991&year=2026&sessiontype=RS&btype=bill")
+    finally:
+        api.close()
+    assert detail["bill"] == "SB991"
+    assert len(calls) == 2
+    assert sleeps == [1]
+    assert calls[0].url == calls[1].url
+
+
+def test_detail_still_rejects_persistently_unreadable_source(monkeypatch) -> None:
+    api = WestVirginiaApiClient(get_settings())
+    api.client.close()
+    calls = []
+    monkeypatch.setattr("app.westvirginia_api.time.sleep", lambda seconds: None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, text="<h1>Service unavailable</h1>")
+
+    api.client = httpx.Client(base_url=api.settings.west_virginia_site_base, transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(ValueError, match="bill number could not be parsed"):
+            api.fetch_bill_detail("/Bill_Status/Bills_history.cfm?input=991&year=2026")
+    finally:
+        api.close()
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("status", [403, 404])
+def test_detail_does_not_retry_access_denied_or_missing_bill(status) -> None:
+    api = WestVirginiaApiClient(get_settings())
+    api.client.close()
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(status)
+
+    api.client = httpx.Client(base_url=api.settings.west_virginia_site_base, transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            api.fetch_bill_detail("/Bill_Status/Bills_history.cfm?input=991&year=2026")
+    finally:
+        api.close()
+    assert len(calls) == 1
+
+
+def test_detail_retries_temporary_http_failure() -> None:
+    api = WestVirginiaApiClient(get_settings())
+    api.client.close()
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(503, headers={"Retry-After": "0"})
+        return httpx.Response(200, text="<h3>Senate Bill 991</h3>")
+
+    api.client = httpx.Client(base_url=api.settings.west_virginia_site_base, transport=httpx.MockTransport(handler))
+    try:
+        assert api.fetch_bill_detail("/Bill_Status/Bills_history.cfm?input=991&year=2026")["bill"] == "SB991"
+    finally:
+        api.close()
+    assert len(calls) == 2
 
 
 def test_fetch_year_bills_reads_official_all_bills_page() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime
 from typing import Any
 
@@ -8,6 +9,7 @@ import httpx
 from bs4 import BeautifulSoup, NavigableString, Tag
 
 from app.http_documents import absolute_url, fetch_document_text
+from app.http_retry import get_with_retries
 from app.settings import Settings
 
 
@@ -95,11 +97,19 @@ class WestVirginiaApiClient:
         return items
 
     def fetch_bill_detail(self, detail_path: str) -> dict[str, Any]:
-        response = self.client.get(detail_path)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        bill_num = self._bill_number(soup)
+        # The source sometimes returns HTTP 200 without the bill heading.
+        # Retry briefly, but never infer an identity from the requested URL.
+        for attempt in range(2):
+            response = get_with_retries(self.client, detail_path, max_attempts=3)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
+            try:
+                bill_num = self._bill_number(soup)
+                break
+            except ValueError:
+                if attempt == 1:
+                    raise
+                time.sleep(1)
         summary = self._label_value_text(soup, "SUMMARY:")
         lead_sponsor = self._label_value_text(soup, "LEAD SPONSOR:")
         sponsors = self._label_value_text(soup, "SPONSORS:")
