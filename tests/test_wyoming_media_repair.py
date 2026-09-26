@@ -25,6 +25,8 @@ def recording(url, **extra):
     ("http://wyoleg.gov/2018/Audio/h021318am1.mp3", "https://wyoleg.gov/2018/Audio/house/h021318am1.mp3"),
     ("http://wyoleg.gov/2008/Audio/house/h030 am1.mp3", "https://wyoleg.gov/2008/Audio/house/h0303am1.mp3"),
     ("http://wyoleg.gov/2015/Audio/senate/s0122pm.mp3", "https://wyoleg.gov/2015/Audio/senate/s0122pm1.mp3"),
+    ("https://wyoleg.gov/2018/Audio/house/h022018pm2.mp3", "https://wyoleg.gov/2018/Audio/house/h022018pm1.mp3"),
+    ("https://wyoleg.gov/2018/Audio/house/sh22218pm1.mp3", "https://wyoleg.gov/2018/Audio/house/h022218pm1.mp3"),
     ("https://elsewhere.example/2018/Audio/AudioMenu/house/test.mp3", "https://elsewhere.example/2018/Audio/AudioMenu/house/test.mp3"),
     ("https://wyoleg.gov/2019/Audio/AudioMenu/house/test.mp3", "https://wyoleg.gov/2019/Audio/AudioMenu/house/test.mp3"),
 ])
@@ -44,6 +46,25 @@ def test_discovery_reuses_legacy_http_record_and_preserves_transcript():
     assert len(list_legislative_media("wy")) == 1
     assert get_legislative_media(media_id)["transcript_status"] == "available"
     assert get_legislative_media(media_id)["explanation_scan_status"] == "complete"
+
+
+@pytest.mark.parametrize(("bad", "good", "date"), [
+    ("h022018pm2.mp3", "h022018pm1.mp3", "2018-02-20"),
+    ("sh22218pm1.mp3", "h022218pm1.mp3", "2018-02-22"),
+])
+def test_verified_2018_aliases_keep_existing_evidence(tmp_path, bad, good, date):
+    base = "https://wyoleg.gov/2018/Audio/house/"
+    keeper = upsert_legislative_media(recording(base + good, session_date=date))
+    update_legislative_media_transcript(keeper, status="available", segments=[{"start": 0, "end": 1, "text": "Saved speech."}])
+    duplicate = upsert_legislative_media(recording(base + "temporary.mp3", session_date=date))
+    with connect() as c:
+        c.execute("UPDATE legislative_media SET source_url=?, transcript_status='source_invalid' WHERE id=?", (base + bad, duplicate))
+        c.commit()
+    before = get_legislative_media(keeper)
+    assert repair_media(apply=True, backup_path=tmp_path / "backup.json")["counts"] == {"duplicate": 1}
+    assert get_legislative_media(keeper) == before
+    assert get_legislative_media(duplicate)["duplicate_of_id"] == keeper
+    assert repair_media()["changes"] == []
 
 
 @pytest.mark.parametrize(("error", "status"), [

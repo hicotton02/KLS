@@ -11,6 +11,7 @@ resources:
   - site-deployment.yaml
   - ingress.yaml
   - cronjob.yaml
+  - federal-catchup-cronjob.yaml
   - wyoming-media-discovery-cronjob.yaml
   - wyoming-transcription-cronjob.yaml
   - wyoming-reasoning-cronjob.yaml

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -62,6 +63,7 @@ class CongressApiClient:
             timeout=self.settings.request_timeout_seconds,
             follow_redirects=True,
         )
+        self._last_request_at = 0.0
 
     def close(self) -> None:
         self.client.close()
@@ -75,6 +77,41 @@ class CongressApiClient:
             },
         )
         return self._extract_items(payload, "bills", singular_key="bill")
+
+    def fetch_bill_catalog(self, congress: int, *, heartbeat: Callable[[], None] = lambda: None) -> list[dict[str, Any]]:
+        items: dict[str, dict[str, Any]] = {}
+        offset = 0
+        expected: int | None = None
+        while True:
+            heartbeat()
+            payload = self._request_json(f"/bill/{congress}", params={
+                "limit": 250, "offset": offset, "sort": "updateDate+desc",
+            })
+            total = payload.get("pagination", {}).get("count")
+            if not isinstance(total, int) or total < 0:
+                raise ValueError("Congress inventory has no valid official total")
+            if expected is not None and total != expected:
+                raise ValueError("Congress inventory changed during pagination; retry the inventory")
+            expected = total
+            page = self._extract_items(payload, "bills", singular_key="bill")
+            if not page and offset < expected:
+                raise ValueError("Congress inventory ended before its official total")
+            for raw in page:
+                kind, number = str(raw.get("type", "")).upper(), str(raw.get("number", ""))
+                if raw.get("congress") != congress or kind not in CONGRESS_GOV_BILL_TYPE_SLUGS or not number.isdigit():
+                    raise ValueError("Congress inventory contains an invalid bill identity")
+                key = congress_bill_identifier(kind, number)
+                if key in items:
+                    raise ValueError("Congress inventory repeated a bill; retry the inventory")
+                # Keep public source facts, not API URLs that may contain credentials.
+                items[key] = {k: raw[k] for k in (
+                    "congress", "type", "number", "title", "latestAction", "updateDate", "updateDateIncludingText",
+                ) if k in raw}
+            offset += len(page)
+            if offset >= expected:
+                if len(items) != expected:
+                    raise ValueError("Congress inventory does not match its official total")
+                return list(items.values())
 
     def fetch_bill_detail(self, congress: int, bill_type: str, number: str | int) -> dict[str, Any]:
         payload = self._request_json(f"/bill/{congress}/{str(bill_type).lower()}/{number}")
@@ -260,9 +297,19 @@ class CongressApiClient:
 
         response: httpx.Response | None = None
         for attempt in range(5):
-            response = self.client.get(path, params=request_params)
+            # One active federal worker stays below the published hourly API budget.
+            time.sleep(max(0.0, 1.0 - (time.monotonic() - self._last_request_at)))
+            self._last_request_at = time.monotonic()
+            try:
+                response = self.client.get(path, params=request_params)
+            except httpx.TransportError as exc:
+                if attempt == 4:
+                    raise RuntimeError(f"Congress source network failure: {type(exc).__name__}") from None
+                time.sleep(self._retry_delay(None, attempt))
+                continue
             if response.status_code not in {429, 500, 502, 503, 504}:
-                response.raise_for_status()
+                if response.is_error:
+                    raise RuntimeError(f"Congress source returned HTTP {response.status_code}") from None
                 return response
 
             retry_after = response.headers.get("Retry-After")
@@ -274,8 +321,7 @@ class CongressApiClient:
 
         if response is None:
             raise RuntimeError(f"Congress API request failed before a response was returned for {path}")
-        response.raise_for_status()
-        return response
+        raise RuntimeError(f"Congress source returned HTTP {response.status_code} after bounded retries")
 
     @staticmethod
     def _retry_delay(retry_after: str | None, attempt: int) -> float:

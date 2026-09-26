@@ -391,6 +391,30 @@ CREATE TABLE IF NOT EXISTS sync_status (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS federal_catalog (
+    congress INTEGER PRIMARY KEY,
+    source_total INTEGER NOT NULL,
+    scanned_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS federal_bill_work (
+    congress INTEGER NOT NULL,
+    bill_num TEXT NOT NULL,
+    item_json TEXT NOT NULL,
+    source_version TEXT NOT NULL,
+    processed_version TEXT,
+    last_seen_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    retry_at TEXT,
+    processed_at TEXT,
+    PRIMARY KEY(congress, bill_num)
+);
+CREATE TABLE IF NOT EXISTS federal_sync_lease (
+    name TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
 """
 
 

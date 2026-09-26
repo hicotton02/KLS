@@ -21,6 +21,8 @@ def normalize_wyoming_media_url(source_url: object) -> str:
     path = {
         "/2008/Audio/house/h030 am1.mp3": "/2008/Audio/house/h0303am1.mp3",
         "/2015/Audio/senate/s0122pm.mp3": "/2015/Audio/senate/s0122pm1.mp3",
+        "/2018/Audio/house/h022018pm2.mp3": "/2018/Audio/house/h022018pm1.mp3",
+        "/2018/Audio/house/sh22218pm1.mp3": "/2018/Audio/house/h022218pm1.mp3",
     }.get(path, path)
     # The 2018 index includes its AudioMenu directory in recording links.
     path = re.sub(r"^/2018/Audio/AudioMenu/(house|senate)/", r"/2018/Audio/\1/", path)
