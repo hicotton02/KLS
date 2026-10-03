@@ -1,9 +1,33 @@
 from __future__ import annotations
 
 import httpx
+import hashlib
+import ssl
 
 from app.settings import get_settings
-from app.utah_api import UtahApiClient
+from app.utah_api import UtahApiClient, UTAH_INTERMEDIATE_CHAIN, _utah_ssl_context
+
+
+def test_utah_chain_preserves_tls_verification():
+    context = _utah_ssl_context()
+    assert context.check_hostname
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert not context.verify_flags & ssl.VERIFY_X509_PARTIAL_CHAIN
+    pem = UTAH_INTERMEDIATE_CHAIN.read_text(encoding='ascii')
+    blocks = [part + '-----END CERTIFICATE-----' for part in pem.split('-----END CERTIFICATE-----') if part.strip()]
+    fingerprints = {hashlib.sha256(ssl.PEM_cert_to_DER_cert(block.strip())).hexdigest() for block in blocks}
+    assert fingerprints == {
+        '6542d176bed50f193c0ce297ae44ecd8a0a86bec2ede682769344059b4e78530',
+        '92f351bf3d54164dfa8dd8f9e1139d3150349786485d2b9eecd00e2971c1e6c5',
+    }
+
+
+def test_utah_client_uses_scoped_verified_context(monkeypatch):
+    contexts = []
+    monkeypatch.setattr(httpx, 'Client', lambda **kwargs: contexts.append(kwargs['verify']))
+    UtahApiClient(get_settings())
+    assert len(contexts) == 1 and contexts[0].check_hostname
+    assert contexts[0].verify_mode == ssl.CERT_REQUIRED
 
 
 def test_fetch_year_bills_parses_official_bill_list() -> None:

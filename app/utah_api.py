@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+import ssl
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -13,6 +15,15 @@ from app.text_utils import clean_text
 
 
 UTAH_BILL_PATH_PATTERN = re.compile(r"/~(?P<year>\d{4})/bills/static/(?P<bill>[A-Z]+\d+)\.html", re.IGNORECASE)
+UTAH_INTERMEDIATE_CHAIN = Path(__file__).with_name("certs") / "sectigo_ov_r36_usertrust_chain.pem"
+
+
+def _utah_ssl_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    # Supply the source's omitted intermediates, still chaining to a trusted root.
+    context.load_verify_locations(cafile=str(UTAH_INTERMEDIATE_CHAIN))
+    context.verify_flags &= ~ssl.VERIFY_X509_PARTIAL_CHAIN
+    return context
 
 
 def parse_utah_date(value: str | None) -> str:
@@ -55,6 +66,7 @@ class UtahApiClient:
             headers={"User-Agent": "keeping-law-simple/1.0"},
             timeout=self.settings.request_timeout_seconds,
             follow_redirects=True,
+            verify=_utah_ssl_context(),
         )
 
     def close(self) -> None:

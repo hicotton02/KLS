@@ -31,6 +31,10 @@ CONGRESS_GOV_BILL_TYPE_SLUGS = {
 SPONSOR_PARTY_SUFFIX = re.compile(r"\s*\[[^\]]+\]\s*$")
 
 
+class _InventoryOverlap(ValueError):
+    pass
+
+
 def congress_bill_identifier(bill_type: str, number: str | int) -> str:
     return f"{str(bill_type or '').upper().strip()}{str(number or '').strip()}"
 
@@ -79,17 +83,44 @@ class CongressApiClient:
         return self._extract_items(payload, "bills", singular_key="bill")
 
     def fetch_bill_catalog(self, congress: int, *, heartbeat: Callable[[], None] = lambda: None) -> list[dict[str, Any]]:
+        try:
+            return self._fetch_catalog_pages(congress, heartbeat=heartbeat)
+        except _InventoryOverlap:
+            # The combined source can repeat bills across pages. Each official
+            # bill-type list must still reconcile to the unchanged Congress total.
+            heartbeat()
+            expected = self._catalog_total(self._request_json(f"/bill/{congress}", params={"limit": 1}))
+            items = []
+            for kind in CONGRESS_GOV_BILL_TYPE_SLUGS:
+                items.extend(self._fetch_catalog_pages(congress, kind=kind, heartbeat=heartbeat))
+            heartbeat()
+            final = self._catalog_total(self._request_json(f"/bill/{congress}", params={"limit": 1}))
+            identities = {congress_bill_identifier(row["type"], row["number"]) for row in items}
+            if final != expected or len(items) != expected or len(identities) != expected:
+                raise ValueError("Congress partitioned inventory does not match its unchanged official total")
+            return items
+
+    @staticmethod
+    def _catalog_total(payload: dict[str, Any]) -> int:
+        total = payload.get("pagination", {}).get("count")
+        if type(total) is not int or total < 0:
+            raise ValueError("Congress inventory has no valid official total")
+        return total
+
+    def _fetch_catalog_pages(
+        self, congress: int, *, kind: str | None = None, heartbeat: Callable[[], None],
+    ) -> list[dict[str, Any]]:
         items: dict[str, dict[str, Any]] = {}
         offset = 0
         expected: int | None = None
+        path = f"/bill/{congress}" + (f"/{kind.lower()}" if kind else "")
         while True:
             heartbeat()
-            payload = self._request_json(f"/bill/{congress}", params={
-                "limit": 250, "offset": offset, "sort": "updateDate+desc",
-            })
-            total = payload.get("pagination", {}).get("count")
-            if not isinstance(total, int) or total < 0:
-                raise ValueError("Congress inventory has no valid official total")
+            params: dict[str, Any] = {"limit": 250, "offset": offset}
+            if not kind:
+                params["sort"] = "updateDate+desc"
+            payload = self._request_json(path, params=params)
+            total = self._catalog_total(payload)
             if expected is not None and total != expected:
                 raise ValueError("Congress inventory changed during pagination; retry the inventory")
             expected = total
@@ -97,12 +128,13 @@ class CongressApiClient:
             if not page and offset < expected:
                 raise ValueError("Congress inventory ended before its official total")
             for raw in page:
-                kind, number = str(raw.get("type", "")).upper(), str(raw.get("number", ""))
-                if raw.get("congress") != congress or kind not in CONGRESS_GOV_BILL_TYPE_SLUGS or not number.isdigit():
+                bill_type, number = str(raw.get("type", "")).upper(), str(raw.get("number", ""))
+                if (raw.get("congress") != congress or bill_type not in CONGRESS_GOV_BILL_TYPE_SLUGS
+                        or not number.isdigit() or (kind and bill_type != kind)):
                     raise ValueError("Congress inventory contains an invalid bill identity")
-                key = congress_bill_identifier(kind, number)
+                key = congress_bill_identifier(bill_type, number)
                 if key in items:
-                    raise ValueError("Congress inventory repeated a bill; retry the inventory")
+                    raise _InventoryOverlap("Congress inventory repeated a bill; retry the inventory")
                 # Keep public source facts, not API URLs that may contain credentials.
                 items[key] = {k: raw[k] for k in (
                     "congress", "type", "number", "title", "latestAction", "updateDate", "updateDateIncludingText",

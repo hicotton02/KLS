@@ -44,7 +44,6 @@ def test_catalog_fetches_every_page_and_drops_api_urls(monkeypatch):
 @pytest.mark.parametrize('pages',[
     [{'pagination':{},'bills':[]}],
     [{'pagination':{'count':2},'bills':[]}],
-    [{'pagination':{'count':2},'bills':[item(1),item(1)]}],
     [{'pagination':{'count':1},'bills':[item(1,congress=118)]}],
     [{'pagination':{'count':2},'bills':[item(1)]},{'pagination':{'count':3},'bills':[item(2)]}],
 ])
@@ -55,6 +54,46 @@ def test_catalog_rejects_incomplete_or_changing_inventory(monkeypatch,pages):
     try:
         with pytest.raises(ValueError): api.fetch_bill_catalog(119)
     finally: api.close()
+
+
+@pytest.mark.parametrize('fault', [None, 'duplicate', 'wrong_type', 'short', 'changed', 'unknown'])
+def test_catalog_overlap_uses_verified_type_partitions(monkeypatch, fault):
+    api = CongressApiClient(get_settings())
+    global_requests = []
+    paths = []
+    heartbeats = []
+
+    def request(path, params):
+        paths.append(path)
+        if path == '/bill/119' and params['limit'] == 250:
+            return {'pagination': {'count': 2}, 'bills': [item(1), item(1)]}
+        if path == '/bill/119':
+            global_requests.append(path)
+            count = 3 if fault == 'changed' and len(global_requests) == 2 else 2
+            return {'pagination': {'count': count}, 'bills': []}
+        kind = path.rsplit('/', 1)[-1].upper()
+        rows = [item(1, type=kind)] if kind in ('HR', 'S') else []
+        if fault == 'duplicate' and kind == 'HR':
+            rows *= 2
+        if fault == 'wrong_type' and kind == 'HR':
+            rows = [item(1, type='S')]
+        if fault == 'short' and kind == 'S':
+            rows = []
+        count = None if fault == 'unknown' and kind == 'HR' else len(rows)
+        return {'pagination': {'count': count}, 'bills': rows}
+
+    monkeypatch.setattr(api, '_request_json', request)
+    try:
+        if fault:
+            with pytest.raises(ValueError):
+                api.fetch_bill_catalog(119)
+        else:
+            rows = api.fetch_bill_catalog(119, heartbeat=lambda: heartbeats.append(True))
+            assert [(r['type'], r['number']) for r in rows] == [('HR', '1'), ('S', '1')]
+            assert len(paths) == len(heartbeats) == 11
+            assert len(global_requests) == 2
+    finally:
+        api.close()
 
 
 def test_work_resumes_and_requeues_text_only_changes():
