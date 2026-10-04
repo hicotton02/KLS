@@ -415,6 +415,31 @@ CREATE TABLE IF NOT EXISTS federal_sync_lease (
     expires_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS bill_summary_work (
+    bill_id INTEGER PRIMARY KEY REFERENCES bills(id) ON DELETE CASCADE,
+    state TEXT NOT NULL,
+    source_version TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    owner TEXT,
+    lease_expires_at TEXT,
+    retry_at TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bill_summary_work_claim
+ON bill_summary_work(state, status, retry_at, lease_expires_at);
+CREATE TABLE IF NOT EXISTS bill_summary_history (
+    bill_id INTEGER NOT NULL REFERENCES bills(id) ON DELETE CASCADE,
+    source_version TEXT NOT NULL,
+    interpretation_json TEXT,
+    bill_tags_json TEXT,
+    search_blob TEXT,
+    saved_at TEXT NOT NULL,
+    PRIMARY KEY(bill_id, source_version)
+);
+
 """
 
 
