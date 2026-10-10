@@ -62,6 +62,13 @@ holds. No worker lease was expired. No new public summary or history row had yet
 been saved during this repair. The shared queue was draining but still had about
 2,900 requests ahead of the newly admitted work. This is not a catch-up claim.
 
+The second scheduled pass reused all existing KLS queue jobs. It added only two
+requests from older attempts whose cooldowns had ended. The replayed test bill
+kept its attempt count of two. The queue then had 44 federal requests waiting and
+two older attempts still cooling down. The 86 review holds and 67 source holds
+were unchanged. The shared queue completed 83 more requests between checks and
+had 2,845 requests left. No new federal summary had yet been saved.
+
 All 120 public route checks passed, including all 52 jurisdiction APIs/pages,
 the single Eric Barlow result, and Wyoming's 2020 SF0139 page/API. The federal
 API initially took 12.7 seconds and its page took 9.2 seconds. A repeat check took
