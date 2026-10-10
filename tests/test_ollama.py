@@ -3,7 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.ollama import OllamaClient
+import httpx
+
+from app.ollama import GPUQueuePending, OllamaClient
 
 
 class _FakeResponse:
@@ -97,3 +99,74 @@ def test_incomplete_explanation_response_is_not_accepted(content, done_reason) -
             bill_num="SF0101", bill_title="Test", lawmakers=["Pat Example"],
             transcript="[100] I vote no because the wording is unclear.",
         )
+
+
+@pytest.mark.parametrize('state', ['queued', 'running'])
+def test_durable_summary_waits_without_blocking_and_reuses_request(state):
+    requests = []
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(202, json={'job_id': 'durable-test', 'state': state})
+    client = object.__new__(OllamaClient)
+    client.settings = SimpleNamespace(ollama_model='test-model')
+    client.queue_key = 'summary:1:source:3'
+    client.clients = [httpx.Client(base_url='http://queue', transport=httpx.MockTransport(handler))]
+    client._client_index = 0
+    try:
+        for _ in range(2):
+            with pytest.raises(GPUQueuePending):
+                client._run_json_prompt('Draft.', temperature=0.1, top_p=0.9, num_predict=700)
+        assert requests[0].headers['idempotency-key'] == requests[1].headers['idempotency-key']
+        assert requests[0].headers['prefer'] == 'respond-async'
+        assert requests[0].headers['x-customer-ref'] == 'keeping-law-simple'
+        assert 'x-gpu-priority' not in requests[0].headers
+        with pytest.raises(GPUQueuePending):
+            client._run_json_prompt('Check.', temperature=0.0, top_p=0.3, num_predict=900)
+        assert requests[2].headers['idempotency-key'] != requests[0].headers['idempotency-key']
+        client.queue_key = 'summary:1:source:4'
+        with pytest.raises(GPUQueuePending):
+            client._run_json_prompt('Draft.', temperature=0.1, top_p=0.9, num_predict=700)
+        assert requests[3].headers['idempotency-key'] != requests[0].headers['idempotency-key']
+    finally:
+        client.close()
+
+
+def test_completed_queue_request_fetches_original_response():
+    requests = []
+    def handler(request):
+        requests.append(request)
+        if 'prefer' in request.headers:
+            return httpx.Response(202, json={'job_id': 'durable-test', 'state': 'succeeded'})
+        return httpx.Response(200, json={'response': '{"ok":true}'})
+    client = object.__new__(OllamaClient)
+    client.settings = SimpleNamespace(ollama_model='test-model')
+    client.queue_key = 'summary:1:source:1'
+    client.clients = [httpx.Client(base_url='http://queue', transport=httpx.MockTransport(handler))]
+    client._client_index = 0
+    try:
+        assert client._run_json_prompt('Draft.', temperature=0.1, top_p=0.9, num_predict=700) == {'ok': True}
+        assert len(requests) == 2
+        assert requests[0].headers['idempotency-key'] == requests[1].headers['idempotency-key']
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize('payload', [
+    {'state': 'queued'},
+    {'job_id': 'durable-test', 'state': 'failed'},
+    {'job_id': 'durable-test', 'state': 'canceled'},
+    {'job_id': 'durable-test', 'state': 'unknown'},
+])
+def test_invalid_or_terminal_queue_job_is_not_a_summary(payload):
+    client = object.__new__(OllamaClient)
+    client.settings = SimpleNamespace(ollama_model='test-model')
+    client.queue_key = 'summary:1:source:1'
+    client.clients = [httpx.Client(base_url='http://queue', transport=httpx.MockTransport(
+        lambda _: httpx.Response(202, json=payload)))]
+    client._client_index = 0
+    try:
+        with pytest.raises(RuntimeError) as error:
+            client._run_json_prompt('Draft.', temperature=0.1, top_p=0.9, num_predict=700)
+        assert not isinstance(error.value, GPUQueuePending)
+    finally:
+        client.close()

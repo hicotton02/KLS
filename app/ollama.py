@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
 from typing import Any
@@ -11,9 +12,14 @@ from app.settings import Settings
 from app.text_utils import truncate_for_prompt
 
 
+class GPUQueuePending(RuntimeError):
+    """A durable request is accepted, but its result is not ready yet."""
+
+
 class OllamaClient:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, *, queue_key: str | None = None):
         self.settings = settings
+        self.queue_key = queue_key
         base_urls = self._expand_base_urls(self.settings.ollama_base_url)
         self.clients = [
             httpx.Client(
@@ -169,27 +175,55 @@ class OllamaClient:
         num_predict: int,
         schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        response = self._next_client().post(
-            "/api/generate",
-            json={
-                "model": self.settings.ollama_model,
-                "prompt": prompt,
-                "stream": False,
-                "format": schema if schema is not None else "json",
-                "think": False,
-                "options": {
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    "num_predict": num_predict,
-                },
+        body = {
+            "model": self.settings.ollama_model,
+            "prompt": prompt,
+            "stream": False,
+            "format": schema if schema is not None else "json",
+            "think": False,
+            "options": {
+                "temperature": temperature,
+                "top_p": top_p,
+                "num_predict": num_predict,
             },
-        )
+        }
+        client = self._next_client()
+        if getattr(self, "queue_key", None):
+            response = self._queued_response(client, body)
+        else:
+            response = client.post("/api/generate", json=body)
         response.raise_for_status()
         payload = response.json()
         if schema is not None and payload.get("done_reason") == "length":
             raise ValueError("Structured response exceeded its output limit; no statements accepted")
         content = payload.get("response", "").strip()
         return json.loads(content)
+
+    def _queued_response(self, client: httpx.Client, body: dict[str, Any]) -> httpx.Response:
+        request_hash = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+        headers = {
+            "Idempotency-Key": f"{self.queue_key}:{request_hash}",
+            "X-Customer-Ref": "keeping-law-simple",
+            "X-Requested-By": "bill-summary-worker",
+        }
+        response = client.post("/api/generate", json=body,
+            headers={**headers, "Prefer": "respond-async"})
+        response.raise_for_status()
+        if response.status_code != 202:
+            return response
+        job = response.json()
+        if not job.get("job_id"):
+            raise RuntimeError("Shared queue did not return a durable job identifier")
+        if job.get("state") in {"queued", "running"}:
+            raise GPUQueuePending("Waiting for the shared AI queue")
+        if job.get("state") != "succeeded":
+            raise RuntimeError("Shared AI request did not succeed")
+        # The same idempotency key retrieves the original result without another dispatch.
+        response = client.post("/api/generate", json=body, headers=headers)
+        response.raise_for_status()
+        if response.status_code == 202:
+            raise GPUQueuePending("Waiting for the shared AI queue")
+        return response
 
     def _next_client(self) -> httpx.Client:
         client = self.clients[self._client_index % len(self.clients)]

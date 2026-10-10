@@ -49,6 +49,17 @@ def check_postgres_summary_queue():
             assert queue.queue_status('wy') == {'pending': 1}
             assert conn.execute('SELECT count(*) AS n FROM bill_summary_history').fetchone()['n'] == 0
             work = queue.claim('wy')
+            queue.finish(work, 'waiting', queue.QUEUE_WAIT_ERROR)
+            conn.execute('UPDATE bill_summary_work SET attempts=%s', (queue.MAX_ATTEMPTS,))
+            work = queue.claim('wy')
+            assert work['attempts'] == queue.MAX_ATTEMPTS
+            assert queue.claim('wy') is None
+            conn.execute("UPDATE bill_summary_work SET lease_expires_at='2000-01-01'")
+            resumed = queue.claim('wy')
+            assert resumed['attempts'] == queue.MAX_ATTEMPTS
+            queue.finish(work, 'complete')
+            assert queue.queue_status('wy') == {'processing': 1}
+            work = resumed
             original = db._parse_row(conn.execute('SELECT * FROM bills').fetchone())
             assert queue.save_result(work, original, good)
             assert queue.queue_status('wy') == {'complete': 1}

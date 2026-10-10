@@ -12,13 +12,14 @@ import httpx
 
 from app.content_quality import assess_bill_content
 from app.db import PostgresConnection, _parse_row, connect, init_db, list_bill_amendments
-from app.ollama import OllamaClient
+from app.ollama import GPUQueuePending, OllamaClient
 from app.settings import get_settings
 from app.sync_service import _amendment_search_snippets, _build_search_blob, _mark_validated_interpretation
 from app.tagging import extract_bill_tags
 
 MAX_ATTEMPTS = 3
 LEASE_SECONDS = 1800
+QUEUE_WAIT_ERROR = 'Waiting for the shared AI queue'
 SOURCE_FIELDS = (
     'source_hash', 'catch_title', 'bill_title', 'sponsor', 'status_label',
     'status_explainer', 'outcome', 'last_action', 'last_action_date', 'effective_date',
@@ -84,23 +85,31 @@ def claim(state: str) -> dict | None:
             c.execute('BEGIN IMMEDIATE')
         c.execute("""UPDATE bill_summary_work SET status='review_hold',owner=NULL,lease_expires_at=NULL,
             last_error='Worker lease expired after the maximum attempts',updated_at=?
-            WHERE state=? AND status='processing' AND lease_expires_at<=? AND attempts>=?""",
-            (timestamp, state, timestamp, MAX_ATTEMPTS))
+            WHERE state=? AND status='processing' AND lease_expires_at<=? AND attempts>=?
+              AND coalesce(last_error,'')<>?""",
+            (timestamp, state, timestamp, MAX_ATTEMPTS, QUEUE_WAIT_ERROR))
         lock = ' FOR UPDATE OF w SKIP LOCKED' if isinstance(c, PostgresConnection) else ''
         row = c.execute("""SELECT w.* FROM bill_summary_work w JOIN bills b ON b.id=w.bill_id
-            WHERE w.state=? AND w.attempts<? AND
-              ((w.status IN ('pending','retry','quality_hold') AND (w.retry_at IS NULL OR w.retry_at<=?))
-                OR (w.status='processing' AND w.lease_expires_at<=?))
+            WHERE w.state=? AND
+              ((w.attempts<? AND
+                ((w.status IN ('pending','retry','quality_hold') AND (w.retry_at IS NULL OR w.retry_at<=?))
+                  OR (w.status='processing' AND w.lease_expires_at<=?)))
+               OR (w.attempts<=? AND
+                 ((w.status='waiting' AND (w.retry_at IS NULL OR w.retry_at<=?))
+                   OR (w.status='processing' AND w.lease_expires_at<=? AND w.last_error=?))))
             ORDER BY w.attempts,b.year DESC,b.bill_num LIMIT 1""" + lock,
-            (state, MAX_ATTEMPTS, timestamp, timestamp)).fetchone()
+            (state, MAX_ATTEMPTS, timestamp, timestamp, MAX_ATTEMPTS, timestamp, timestamp, QUEUE_WAIT_ERROR)).fetchone()
         if row is None:
             c.commit()
             return None
-        c.execute("""UPDATE bill_summary_work SET status='processing',attempts=attempts+1,
+        resume = row['status'] == 'waiting' or (
+            row['status'] == 'processing' and row['last_error'] == QUEUE_WAIT_ERROR)
+        attempts = row['attempts'] if resume else row['attempts'] + 1
+        c.execute("""UPDATE bill_summary_work SET status='processing',attempts=?,
             owner=?,lease_expires_at=?,updated_at=? WHERE bill_id=?""",
-            (owner, later(LEASE_SECONDS), timestamp, row['bill_id']))
+            (attempts, owner, later(LEASE_SECONDS), timestamp, row['bill_id']))
         c.commit()
-    return {**dict(row), 'owner': owner, 'attempts': row['attempts'] + 1}
+    return {**dict(row), 'owner': owner, 'attempts': attempts}
 
 
 def finish(work: dict, status: str, error: str | None = None, *, cooldown: int = 0) -> None:
@@ -114,7 +123,7 @@ def finish(work: dict, status: str, error: str | None = None, *, cooldown: int =
 
 def generate(bill: dict) -> dict:
     settings = get_settings()
-    client = OllamaClient(settings)
+    client = OllamaClient(settings, queue_key=bill.get('_summary_queue_key'))
     args = {
         'bill': {'bill':bill['bill_num'],'catchTitle':bill.get('catch_title'),'billTitle':bill.get('bill_title'),
                  'sponsor':bill.get('sponsor'),'lastAction':bill.get('last_action'),
@@ -192,10 +201,21 @@ def process_one(work: dict) -> str:
         refresh_queue(work['state'])
         return 'changed'
     try:
-        interpretation = generate(bill)
+        with connect() as c:
+            updated = c.execute("""UPDATE bill_summary_work SET last_error=? WHERE bill_id=? AND owner=?
+                AND source_version=? AND status='processing' AND lease_expires_at>?""",
+                (QUEUE_WAIT_ERROR, work['bill_id'], work['owner'], work['source_version'], now()))
+            c.commit()
+            if updated.rowcount != 1:
+                return 'changed'
+        key = f"kls-summary:{bill['id']}:{source_version(bill, include_text=True)}:{work['attempts']}"
+        interpretation = generate({**bill, '_summary_queue_key': key})
         if not assess_bill_content({**bill,'interpretation_json':interpretation})['summary_ready']:
             raise ValueError('Generated summary did not pass the content quality check')
         return 'saved' if save_result(work, bill, interpretation) else 'changed'
+    except GPUQueuePending:
+        finish(work, 'waiting', QUEUE_WAIT_ERROR, cooldown=300)
+        return 'waiting'
     except ValueError:
         finish(work, 'quality_hold' if work['attempts'] < MAX_ATTEMPTS else 'review_hold',
             'Generated summary did not pass validation', cooldown=21600)

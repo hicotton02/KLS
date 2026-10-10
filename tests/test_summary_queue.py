@@ -178,3 +178,69 @@ def test_run_is_bounded_and_resumes_next_bill(monkeypatch):
     assert queue.run('wy',limit=1)['results']=={'saved':1}
     assert queue.run('wy',limit=1)['results']=={'saved':1}
     assert queue.queue_status('wy')=={'complete':2}
+
+
+def test_shared_queue_wait_reuses_last_attempt_and_keeps_cooldown(monkeypatch):
+    bid = bill()
+    queue.refresh_queue('wy')
+    with connect() as c:
+        c.execute('UPDATE bill_summary_work SET attempts=? WHERE bill_id=?', (queue.MAX_ATTEMPTS - 1, bid))
+        c.commit()
+    keys = []
+    def waiting(data):
+        keys.append(data['_summary_queue_key'])
+        raise queue.GPUQueuePending()
+    monkeypatch.setattr(queue, 'generate', waiting)
+    first = queue.claim('wy')
+    assert first['attempts'] == queue.MAX_ATTEMPTS
+    assert queue.process_one(first) == 'waiting'
+    assert work_row(bid)['status'] == 'waiting'
+    assert queue.claim('wy') is None
+    queue.refresh_queue('wy')
+    assert work_row(bid)['status'] == 'waiting'
+    with connect() as c:
+        c.execute("UPDATE bill_summary_work SET retry_at='2000-01-01' WHERE bill_id=?", (bid,))
+        c.commit()
+    second = queue.claim('wy')
+    assert second['attempts'] == queue.MAX_ATTEMPTS
+    assert queue.process_one(second) == 'waiting'
+    assert keys[0] == keys[1]
+    assert get_bill('wy', 2026, 'HB0001')['interpretation_json'] is None
+    with connect() as c:
+        c.execute("UPDATE bill_summary_work SET retry_at='2000-01-01' WHERE bill_id=?", (bid,))
+        c.commit()
+    monkeypatch.setattr(queue, 'generate', lambda _: GOOD)
+    assert queue.process_one(queue.claim('wy')) == 'saved'
+    assert work_row(bid)['attempts'] == queue.MAX_ATTEMPTS
+
+
+def test_expired_waiting_worker_resumes_same_attempt_without_duplicate_claim():
+    bid = bill()
+    queue.refresh_queue('wy')
+    original = queue.claim('wy')
+    with connect() as c:
+        c.execute("""UPDATE bill_summary_work SET last_error=?,lease_expires_at='2000-01-01',
+            attempts=? WHERE bill_id=?""", (queue.QUEUE_WAIT_ERROR, queue.MAX_ATTEMPTS, bid))
+        c.commit()
+    resumed = queue.claim('wy')
+    assert resumed['owner'] != original['owner']
+    assert resumed['attempts'] == queue.MAX_ATTEMPTS
+    assert queue.claim('wy') is None
+    queue.finish(original, 'complete')
+    assert work_row(bid)['owner'] == resumed['owner']
+
+
+def test_real_failure_after_queue_wait_still_stops_at_retry_limit(monkeypatch):
+    bid = bill()
+    queue.refresh_queue('wy')
+    with connect() as c:
+        c.execute("UPDATE bill_summary_work SET status='waiting',attempts=? WHERE bill_id=?",
+            (queue.MAX_ATTEMPTS, bid))
+        c.commit()
+    def failed(_):
+        raise RuntimeError('Shared job failed')
+    monkeypatch.setattr(queue, 'generate', failed)
+    assert queue.process_one(queue.claim('wy')) == 'retry'
+    assert work_row(bid)['status'] == 'review_hold'
+    assert work_row(bid)['attempts'] == queue.MAX_ATTEMPTS
+    assert queue.claim('wy') is None

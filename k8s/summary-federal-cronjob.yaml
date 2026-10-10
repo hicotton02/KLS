@@ -36,7 +36,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: worker
-              image: registry.skazproconsulting.com/keeping-law-simple/web:20261004-summaries1@sha256:6a3897a451983cd2e5303b713ef3271d355b83968b384cc70011daf4aba850e0
+              image: registry.skazproconsulting.com/keeping-law-simple/web:20261010-gpu2-queue1@sha256:87172c99ab6fa43041660d71baf67e07d1c3da9c735b9e84189ffe6b3dc1a77e
               command: [python, -u, -m, app.summary_queue, --state, us, --limit, "32", --deadline-seconds, "1500"]
               env:
                 - name: PGPASSWORD
