@@ -279,3 +279,108 @@ def test_refresh_lock_keys_are_stable_and_state_scoped():
     assert queue._refresh_lock_key('wy') == queue._refresh_lock_key('wy')
     assert queue._refresh_lock_key('wy') != queue._refresh_lock_key('us')
     assert -(2**63) <= queue._refresh_lock_key('wy') < 2**63
+
+
+def held_bill(**kwargs):
+    bid=bill(**kwargs)
+    queue.refresh_queue('wy')
+    with connect() as c:
+        c.execute("""UPDATE bill_summary_work SET status='review_hold',attempts=3,
+            last_error='Generated summary did not pass validation',owner=NULL,lease_expires_at=NULL,retry_at=NULL
+            WHERE bill_id=?""",(bid,))
+        c.commit()
+    return bid
+
+
+def test_explicit_review_is_backed_up_and_keeps_attempt_count(tmp_path,monkeypatch):
+    from scripts.review_held_summaries import review_one
+    bid=held_bill()
+    original=work_row(bid)
+    with (tmp_path/'backup.jsonl').open('x') as backup:
+        assert review_one(bid,backup)=='approved'
+        assert review_one(bid,backup)=='not_eligible'
+    saved=json.loads((tmp_path/'backup.jsonl').read_text())
+    assert saved['work']==original
+    assert saved['bill']['bill_num']=='HB0001'
+    work=queue.claim('wy')
+    assert work['attempts']==3
+    monkeypatch.setattr(queue,'generate',lambda _:GOOD)
+    assert queue.process_one(work)=='saved'
+    assert work_row(bid)['attempts']==3
+
+
+def test_failed_review_stops_again_without_another_automatic_attempt(tmp_path,monkeypatch):
+    from scripts.review_held_summaries import review_one
+    bid=held_bill()
+    with (tmp_path/'backup.jsonl').open('x') as backup:
+        assert review_one(bid,backup)=='approved'
+    def truncated(_):
+        raise queue.ResponseOutputLimit('Output limit')
+    monkeypatch.setattr(queue,'generate',truncated)
+    assert queue.process_one(queue.claim('wy'))=='quality_hold'
+    assert work_row(bid)['status']=='review_hold'
+    assert work_row(bid)['attempts']==3
+    assert work_row(bid)['last_error']=='Summary response exceeded its output limit'
+    assert queue.claim('wy') is None
+
+
+@pytest.mark.parametrize('kwargs,expected', [({'interpretation':GOOD},'preserved'),
+    ({'text':'No source'},'source_hold')])
+def test_review_preserves_valid_content_and_missing_sources(tmp_path,kwargs,expected):
+    from scripts.review_held_summaries import review_one
+    bid=held_bill(**kwargs)
+    original=work_row(bid)
+    with (tmp_path/'backup.jsonl').open('x') as backup:
+        assert review_one(bid,backup)==expected
+    assert work_row(bid)==original
+    assert not (tmp_path/'backup.jsonl').read_text()
+
+
+def test_review_does_not_override_cooldowns_or_source_changes(tmp_path):
+    from scripts.review_held_summaries import review_one
+    bid=held_bill()
+    with connect() as c:
+        c.execute("UPDATE bill_summary_work SET retry_at='2999-01-01' WHERE bill_id=?",(bid,))
+        c.commit()
+    with (tmp_path/'backup.jsonl').open('x') as backup:
+        assert review_one(bid,backup)=='not_eligible'
+        with connect() as c:
+            c.execute("UPDATE bill_summary_work SET retry_at=NULL WHERE bill_id=?",(bid,))
+            c.execute("UPDATE bills SET source_hash='new-version' WHERE id=?",(bid,))
+            c.commit()
+        assert review_one(bid,backup)=='source_changed'
+    assert work_row(bid)['status']=='review_hold'
+
+
+def test_backup_failure_cannot_approve_a_review(tmp_path,monkeypatch):
+    from scripts import review_held_summaries as review
+    bid=held_bill()
+    original=work_row(bid)
+    def fail(_): raise OSError('Disk unavailable')
+    monkeypatch.setattr(review.os,'fsync',fail)
+    with (tmp_path/'backup.jsonl').open('x') as backup:
+        with pytest.raises(OSError): review.review_one(bid,backup)
+    assert work_row(bid)==original
+
+
+@pytest.mark.parametrize('path,expected', [('/backups/review.jsonl',True),('/data/review.jsonl',False),
+    ('/backups/scratch/review.jsonl',False),('/backups-other/review.jsonl',False)])
+def test_review_requires_the_actual_persistent_mount(path,expected):
+    from scripts.review_held_summaries import _is_nfs_path
+    mounts='''1 0 0:1 / / rw - overlay overlay rw
+2 1 0:2 / /backups rw - nfs4 nas:/maintenance rw
+3 1 0:3 / /data rw - tmpfs tmpfs rw
+4 2 0:4 / /backups/scratch rw - tmpfs tmpfs rw'''
+    assert _is_nfs_path(path,mounts)==expected
+
+
+def test_kubernetes_review_refuses_scratch_storage_before_changing_rows(tmp_path,monkeypatch):
+    from scripts import review_held_summaries as review
+    bid=held_bill()
+    original=work_row(bid)
+    monkeypatch.setenv('KUBERNETES_SERVICE_HOST','test-cluster')
+    monkeypatch.setattr(review,'_is_nfs_path',lambda *_:False)
+    with (tmp_path/'backup.jsonl').open('x') as backup:
+        with pytest.raises(ValueError,match='persistent NFS'):
+            review.review_one(bid,backup)
+    assert work_row(bid)==original

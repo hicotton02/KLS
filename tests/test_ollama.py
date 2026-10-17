@@ -5,7 +5,7 @@ import pytest
 
 import httpx
 
-from app.ollama import GPUQueuePending, OllamaClient
+from app.ollama import GPUQueuePending, OllamaClient, ResponseOutputLimit
 
 
 class _FakeResponse:
@@ -54,6 +54,32 @@ def test_json_prompt_disables_model_thinking() -> None:
     assert transport.payload is not None
     assert transport.payload["think"] is False
     assert transport.payload["format"] == "json"
+
+
+def test_summary_and_fact_check_have_room_for_complete_json():
+    transport = _FakeClient()
+    client = object.__new__(OllamaClient)
+    client.settings = SimpleNamespace(ollama_model='test-model')
+    client.clients = [transport]
+    client._client_index = 0
+    args=dict(bill={},status_info={},official_summary_text='Source',official_digest_text='',current_bill_text='')
+    draft=client.generate_interpretation(**args)
+    assert transport.payload['options']['num_predict']==1400
+    client.fact_check_interpretation(**args,candidate_interpretation=draft)
+    assert transport.payload['options']['num_predict']==2000
+
+
+def test_valid_looking_but_truncated_plain_json_is_rejected():
+    client = object.__new__(OllamaClient)
+    client.settings = SimpleNamespace(ollama_model='test-model')
+    client._client_index=0
+    client.clients=[httpx.Client(base_url='http://test',transport=httpx.MockTransport(
+        lambda r:httpx.Response(200,json={'response':'{"one_sentence_summary":"Incomplete"}','done_reason':'length'},request=r)))]
+    try:
+        with pytest.raises(ResponseOutputLimit):
+            client._run_json_prompt('test',temperature=0,top_p=0.3,num_predict=2000)
+    finally:
+        client.close()
 
 
 def test_vote_explanation_prompt_has_room_for_complete_json() -> None:

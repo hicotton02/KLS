@@ -1,11 +1,13 @@
 """Optional PostgreSQL regression test using rolled-back temporary tables."""
 import json
 import os
+import tempfile
 import unittest
 import uuid
 from unittest.mock import patch
 
 from app import db, summary_queue as queue
+from scripts import review_held_summaries as review
 
 
 def check_postgres_summary_queue():
@@ -78,6 +80,19 @@ def check_postgres_summary_queue():
             assert saved['source_hash'] == 'changed'
             assert json.loads(saved['interpretation_json']) == good
             assert conn.execute('SELECT count(*) AS n FROM bill_summary_history').fetchone()['n'] == 1
+            conn.execute('UPDATE bills SET interpretation_json=NULL')
+            conn.execute("""UPDATE bill_summary_work SET status='review_hold',attempts=3,retry_at=NULL,
+                last_error='Generated summary did not pass validation',owner=NULL,lease_expires_at=NULL""")
+            with patch.object(review,'connect',lambda:Borrowed(conn)), \
+                    patch.object(review,'_require_durable_backup',lambda _:None), tempfile.TemporaryFile(mode='w+') as backup:
+                assert review.review_one(2000000000,backup)=='approved'
+                assert review.review_one(2000000000,backup)=='not_eligible'
+                backup.seek(0)
+                assert json.loads(backup.read())['work']['attempts']==3
+            work=queue.claim('wy')
+            assert work['attempts']==3
+            queue.finish(work,'review_hold','Generated summary did not pass validation')
+            assert queue.claim('wy') is None
     finally:
         conn.rollback()
         conn.close()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from app.settings import get_settings
 from app.washington_api import WashingtonApiClient
@@ -11,63 +12,129 @@ def test_fetch_year_bills_dedupes_versions_into_canonical_bill_numbers() -> None
     api = WashingtonApiClient(settings)
     api.close()
 
-    feature_xml = """<?xml version="1.0" encoding="utf-8"?>
-    <DataTable xmlns="http://WSLWebServices.leg.wa.gov/">
-      <diffgr:diffgram xmlns:diffgr="urn:schemas-microsoft-com:xml-diffgram-v1">
-        <NewDataSet xmlns="">
-          <Table>
-            <prefix>HB </prefix>
-            <legnum>1014</legnum>
-            <sharepointtitle>HB 1014</sharepointtitle>
-            <sponsor>Schmidt</sponsor>
-            <status>Introduced</status>
-            <title>Child support schedule</title>
-            <bienYear>2025</bienYear>
-          </Table>
-          <Table>
-            <prefix>EHB </prefix>
-            <legnum>1014</legnum>
-            <sharepointtitle>EHB 1014</sharepointtitle>
-            <sponsor>Schmidt</sponsor>
-            <status>C 272 L 25</status>
-            <title>Child support schedule</title>
-            <bienYear>2025</bienYear>
-            <passedLegislature>Yes</passedLegislature>
-          </Table>
-          <Table>
-            <prefix>HCR </prefix>
-            <legnum>4400</legnum>
-            <sharepointtitle>HCR 4400</sharepointtitle>
-            <sponsor>Ormsby</sponsor>
-            <status>Adopted</status>
-            <title>Legislature joint sessions</title>
-            <bienYear>2025</bienYear>
-          </Table>
-        </NewDataSet>
-      </diffgr:diffgram>
-    </DataTable>
-    """
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/LegislationService.asmx/GetLegislativeBillListFeatureData"):
-            return httpx.Response(200, text=feature_xml, request=request)
-        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
-
+    # The old feature endpoint is deliberately never called: it has a server-side SQL timeout.
+    year_xml = '''<ArrayOfLegislationInfo xmlns="http://WSLWebServices.leg.wa.gov/">
+      <LegislationInfo><Biennium>2025-26</Biennium><BillId>HB 1014</BillId><BillNumber>1014</BillNumber></LegislationInfo>
+      <LegislationInfo><Biennium>2025-26</Biennium><BillId>EHB 1014</BillId><BillNumber>1014</BillNumber></LegislationInfo>
+      <LegislationInfo><Biennium>2025-26</Biennium><BillId>HCR 4400</BillId><BillNumber>4400</BillNumber></LegislationInfo>
+    </ArrayOfLegislationInfo>'''
+    requests = []
+    def year_handler(request):
+        if request.url.path.endswith('/GetLegislationIntroducedSince'):
+            return httpx.Response(200,text=year_xml.replace('LegislationInfo','Legislation'),request=request)
+        if request.url.path.endswith('/GetLegislationNotYetIntroducedInHouseOfOrigin'):
+            return httpx.Response(200,text='<ArrayOfLegislationInfo xmlns="http://WSLWebServices.leg.wa.gov/"/>',request=request)
+        assert request.url.path.endswith('/GetLegislationByYear')
+        requests.append(request.url.params['year'])
+        return httpx.Response(200, text=year_xml, request=request)
     api.service_client = httpx.Client(
         base_url="https://wslwebservices.leg.wa.gov",
         follow_redirects=True,
-        transport=httpx.MockTransport(handler),
+        transport=httpx.MockTransport(year_handler),
     )
 
     try:
         bills = api.fetch_year_bills(2026)
+        assert api.fetch_year_bills(2026) == bills
     finally:
         api.close()
 
     assert [item["billNum"] for item in bills] == ["HB1014", "HCR4400"]
-    assert bills[0]["billStatus"] == "C 272 L 25"
+    assert requests == ['2025','2026']
     assert bills[0]["baseBillId"] == "HB 1014"
     assert bills[1]["detailPath"].endswith("BillNumber=4400&Year=2026&Initiative=false")
+
+
+@pytest.mark.parametrize('content', [
+    '<html>Server maintenance</html>',
+    '<ArrayOfLegislationInfo xmlns="http://WSLWebServices.leg.wa.gov/"/>',
+    '<ArrayOfLegislationInfo xmlns="http://WSLWebServices.leg.wa.gov/"><LegislationInfo><Biennium>2023-24</Biennium><BillId>HB 1</BillId><BillNumber>1</BillNumber></LegislationInfo></ArrayOfLegislationInfo>',
+    '<ArrayOfLegislationInfo xmlns="http://WSLWebServices.leg.wa.gov/"><LegislationInfo><Biennium>2025-26</Biennium><BillId>HB 1</BillId><BillNumber>2</BillNumber></LegislationInfo></ArrayOfLegislationInfo>',
+])
+def test_year_inventory_fails_closed(content):
+    api = WashingtonApiClient(get_settings())
+    api.service_client.close()
+    api.service_client = httpx.Client(base_url='https://wslwebservices.leg.wa.gov',
+        transport=httpx.MockTransport(lambda r:httpx.Response(200,text=content,request=r)))
+    try:
+        with pytest.raises(ValueError):
+            api.fetch_year_bills(2026)
+        assert not api._feature_rows
+    finally:
+        api.close()
+
+
+def test_year_inventory_keeps_first_year_bills_and_numbered_initiatives():
+    api = WashingtonApiClient(get_settings())
+    api.service_client.close()
+    def handler(r):
+        if r.url.path.endswith('/GetLegislationIntroducedSince'):
+            return httpx.Response(200,text='''<ArrayOfLegislation xmlns="http://WSLWebServices.leg.wa.gov/">
+                <Legislation><Biennium>2025-26</Biennium><BillId>HB 1</BillId><BillNumber>1</BillNumber><ShortDescription>School funding</ShortDescription><Sponsor>(Example)</Sponsor><CurrentStatus><HistoryLine>Governor signed.</HistoryLine><ActionDate>2026-04-01</ActionDate><Status>C 42 L 26</Status></CurrentStatus></Legislation>
+                <Legislation><Biennium>2025-26</Biennium><BillId>HI IL26-001</BillId><BillNumber>26001</BillNumber></Legislation>
+                </ArrayOfLegislation>''',request=r)
+        if r.url.path.endswith('/GetLegislationNotYetIntroducedInHouseOfOrigin'):
+            return httpx.Response(200,text='<ArrayOfLegislationInfo xmlns="http://WSLWebServices.leg.wa.gov/"/>',request=r)
+        year = r.url.params['year']
+        bill, number = ('HB 1','1') if year == '2025' else ('HI IL26-001','26001')
+        return httpx.Response(200,text=f'''<ArrayOfLegislationInfo xmlns="http://WSLWebServices.leg.wa.gov/">
+            <LegislationInfo><Biennium>2025-26</Biennium><BillId>{bill}</BillId><BillNumber>{number}</BillNumber></LegislationInfo>
+            </ArrayOfLegislationInfo>''',request=r)
+    api.service_client = httpx.Client(base_url='https://wslwebservices.leg.wa.gov',transport=httpx.MockTransport(handler))
+    try:
+        rows = api.fetch_year_bills(2026)
+        assert [r['billNum'] for r in rows] == ['HB1','HI26001']
+        assert rows[1]['baseBillId'] == 'HI 26001'
+        assert rows[1]['detailPath'].endswith('Initiative=true')
+        assert rows[0]['catchTitle']=='School funding' and rows[0]['sponsor']=='Example'
+        assert rows[0]['lastAction']=='Governor signed.' and rows[0]['lastActionDate']=='2026-04-01'
+        assert rows[0]['chapter']=='Chapter 42'
+    finally:
+        api.close()
+
+
+def test_detail_selects_the_right_chamber_and_current_version():
+    api = WashingtonApiClient(get_settings())
+    api.service_client.close()
+    content='''<ArrayOfLegislation xmlns="http://WSLWebServices.leg.wa.gov/">
+        <Legislation><Biennium>2025-26</Biennium><BillId>HI IL26-001</BillId><BillNumber>26001</BillNumber><Active>true</Active></Legislation>
+        <Legislation><Biennium>2025-26</Biennium><BillId>SI IL26-001</BillId><BillNumber>26001</BillNumber><Active>true</Active></Legislation>
+        </ArrayOfLegislation>'''
+    api.service_client = httpx.Client(base_url='https://wslwebservices.leg.wa.gov',
+        transport=httpx.MockTransport(lambda r:httpx.Response(200,text=content,request=r)))
+    try:
+        from app.washington_api import WASHINGTON_XML_NS
+        result=api._fetch_legislation('2025-26',26001,'SI26001')
+        assert result.findtext('wa:BillId',namespaces=WASHINGTON_XML_NS)=='SI IL26-001'
+        with pytest.raises(ValueError): api._fetch_legislation('2025-26',26001,'HB26001')
+    finally:
+        api.close()
+
+
+def test_bulk_metadata_avoids_per_bill_requests_and_keeps_unintroduced_records():
+    api=WashingtonApiClient(get_settings())
+    api.service_client.close()
+    calls=[]
+    def xml(name,bill,number,title=''):
+        return f'<ArrayOf{name} xmlns="http://WSLWebServices.leg.wa.gov/"><{name}><Biennium>2025-26</Biennium><BillId>{bill}</BillId><BillNumber>{number}</BillNumber><ShortDescription>{title}</ShortDescription></{name}></ArrayOf{name}>'
+    def handler(r):
+        method=r.url.path.rsplit('/',1)[-1]
+        calls.append(method)
+        if method=='GetLegislationByYear': text=xml('LegislationInfo','HB 1','1')
+        elif method=='GetLegislationNotYetIntroducedInHouseOfOrigin': text=xml('LegislationInfo','HR 1','1')
+        elif method=='GetLegislationIntroducedSince': text=xml('Legislation','HB 1','1','School funding')
+        elif method=='GetLegislation': text=xml('Legislation','HR 1','1','House rules')
+        else: raise AssertionError(method)
+        return httpx.Response(200,text=text,request=r)
+    api.service_client=httpx.Client(base_url='https://wslwebservices.leg.wa.gov',transport=httpx.MockTransport(handler))
+    try:
+        rows=api.fetch_year_bills(2026)
+        assert [r['catchTitle'] for r in rows]==['School funding','House rules']
+        api.fetch_year_bills(2026)
+        assert calls.count('GetLegislationIntroducedSince')==1
+        assert calls.count('GetLegislation')==1
+    finally:
+        api.close()
 
 
 def test_fetch_bill_detail_combines_service_and_public_page() -> None:

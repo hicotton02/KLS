@@ -90,6 +90,8 @@ class WashingtonApiClient:
             follow_redirects=True,
         )
         self._feature_rows: dict[int, list[dict[str, Any]]] = {}
+        self._legislation_cache: dict[tuple[str, str], ET.Element] = {}
+        self._bulk_loaded: set[str] = set()
 
     def close(self) -> None:
         self.client.close()
@@ -106,7 +108,54 @@ class WashingtonApiClient:
             candidate = self._build_list_item(year, bill_num, row)
             if existing is None or int(candidate.get("rowRank", 0)) > int(existing.get("rowRank", 0)):
                 deduped[bill_num] = candidate
+        self._load_bulk_legislation(year)
+        for bill_num, item in deduped.items():
+            node = self._fetch_legislation(washington_biennium(year), item['billNumber'], bill_num)
+            status = node.find('wa:CurrentStatus', WASHINGTON_XML_NS)
+            def value(tag):
+                return clean_text(self._xml_text(node.find('wa:'+tag, WASHINGTON_XML_NS)))
+            short, long = value('ShortDescription'), value('LongDescription')
+            action = clean_text(self._xml_text(status.find('wa:HistoryLine', WASHINGTON_XML_NS))) if status is not None else ''
+            date = parse_washington_date(self._xml_text(status.find('wa:ActionDate', WASHINGTON_XML_NS))) if status is not None else ''
+            label = clean_text(self._xml_text(status.find('wa:Status', WASHINGTON_XML_NS))) if status is not None else ''
+            item.update(catchTitle=short or long or bill_num,billTitle=long or short or bill_num,
+                sponsor=value('Sponsor').strip('()'),lastAction=action or label,lastActionDate=date,
+                billStatus=label or action,chapter=self._session_law_chapter(node),
+                currentVersionFingerprint='|'.join((value('BillId'),date,label)))
         return sorted(deduped.values(), key=lambda item: _sort_bill_key(str(item["billNum"])))
+
+    def _load_bulk_legislation(self, year: int) -> None:
+        biennium = washington_biennium(year)
+        if biennium in self._bulk_loaded:
+            return
+        response = self.service_client.get('/LegislationService.asmx/GetLegislationIntroducedSince',
+            params={'sinceDate':f'{washington_biennium_start(year)-1}-12-01T00:00:00'})
+        response.raise_for_status()
+        root = ET.fromstring(response.text)
+        if root.tag != '{' + WASHINGTON_XML_NS['wa'] + '}ArrayOfLegislation':
+            raise ValueError('Washington detailed inventory has an unexpected XML root')
+        pending = {}
+        for node in root.findall('wa:Legislation',WASHINGTON_XML_NS):
+            if self._xml_text(node.find('wa:Biennium',WASHINGTON_XML_NS)) != biennium:
+                continue
+            display = self._xml_text(node.find('wa:BillId',WASHINGTON_XML_NS)).split()
+            number = self._xml_text(node.find('wa:BillNumber',WASHINGTON_XML_NS))
+            original_id = self._xml_text(node.find('wa:BillId',WASHINGTON_XML_NS))
+            normal = re.fullmatch(r'([A-Z0-9]+)\s+(\d+)',original_id)
+            initiative = re.fullmatch(r'(HI|SI) IL(\d{2})-(\d{3})',original_id)
+            expected = normal.group(2) if normal else str(int(initiative.group(2)+initiative.group(3))) if initiative else ''
+            if (not display or not number.isdigit() or number != expected
+                    or canonical_washington_prefix(display[0]) not in WASHINGTON_BASE_PREFIXES):
+                raise ValueError('Washington detailed inventory contains an invalid identity')
+            bill_num = normalize_washington_bill_number(display[0],number)
+            key = (biennium,bill_num)
+            old = pending.get(key)
+            if old is None or self._version_rank(node) > self._version_rank(old):
+                pending[key] = node
+        if not pending:
+            raise ValueError('Washington detailed inventory is empty for this biennium')
+        self._legislation_cache.update(pending)
+        self._bulk_loaded.add(biennium)
 
     def fetch_bill_detail(self, detail_path: str, item: dict[str, Any] | None = None) -> dict[str, Any]:
         source_item = item or {}
@@ -122,7 +171,7 @@ class WashingtonApiClient:
         bill_number = int(clean_text(str(source_item.get("billNumber") or "")) or re.sub(r"^[A-Z]+", "", bill_num))
         bill_id = str(source_item.get("baseBillId") or self._base_bill_id(bill_num))
 
-        legislation = self._fetch_legislation(biennium, bill_number)
+        legislation = self._fetch_legislation(biennium, bill_number, bill_num)
         sponsors = self._fetch_sponsors(biennium, bill_id)
         amendments = self._fetch_amendments(biennium, bill_number)
 
@@ -201,17 +250,35 @@ class WashingtonApiClient:
         if cached is not None:
             return cached
 
-        response = self.service_client.get("/LegislationService.asmx/GetLegislativeBillListFeatureData")
-        response.raise_for_status()
-        root = ET.fromstring(response.text)
+        # The feature-data operation times out in the state's database. The
+        # documented year lists also cover bills inactive in the second year.
         rows: list[dict[str, Any]] = []
         biennium_start = washington_biennium_start(year)
-        for node in root.findall(".//Table"):
-            row = {child.tag: clean_text(child.text) for child in node}
-            row_year = int(row.get("bienYear") or 0)
-            if row_year != biennium_start:
-                continue
-            rows.append(row)
+        sources = [('GetLegislationByYear', {'year':source_year}, False)
+            for source_year in range(biennium_start,year+1)]
+        sources.append(('GetLegislationNotYetIntroducedInHouseOfOrigin', {'biennium':washington_biennium(year)}, True))
+        for method, params, allow_empty in sources:
+            response = self.service_client.get('/LegislationService.asmx/' + method, params=params)
+            response.raise_for_status()
+            root = ET.fromstring(response.text)
+            if root.tag != "{" + WASHINGTON_XML_NS['wa'] + "}ArrayOfLegislationInfo":
+                raise ValueError("Washington year list has an unexpected XML root")
+            nodes = root.findall("wa:LegislationInfo", WASHINGTON_XML_NS)
+            if not nodes and not allow_empty:
+                raise ValueError("Washington year list is empty; coverage is not confirmed")
+            for node in nodes:
+                values = {child.tag.rsplit('}', 1)[-1]: clean_text(child.text) for child in node}
+                match = re.fullmatch(r"([A-Z0-9]+)\s+(\d+)", values.get('BillId', ''))
+                initiative = re.fullmatch(r'(HI|SI) IL(\d{2})-(\d{3})', values.get('BillId',''))
+                if initiative:
+                    match = re.fullmatch(r'([A-Z]+) (\d+)',
+                        initiative.group(1) + ' ' + str(int(initiative.group(2) + initiative.group(3))))
+                if (values.get('Biennium') != washington_biennium(year) or not match
+                        or match.group(2) != values.get('BillNumber')
+                        or canonical_washington_prefix(match.group(1)) not in WASHINGTON_BASE_PREFIXES):
+                    raise ValueError("Washington year list contains a mismatched bill identity")
+                rows.append({'prefix':match.group(1),'legnum':match.group(2),
+                    'sharepointtitle':values['BillId'],'bienYear':str(biennium_start)})
         self._feature_rows[year] = rows
         return rows
 
@@ -222,7 +289,7 @@ class WashingtonApiClient:
         status = clean_text(row.get("status"))
         detail_path = (
             f"{self.settings.washington_site_base.rstrip('/')}/billsummary"
-            f"?BillNumber={bill_number}&Year={year}&Initiative=false"
+            f"?BillNumber={bill_number}&Year={year}&Initiative={'true' if canonical_prefix in ('HI','SI') else 'false'}"
         )
         return {
             "billNum": bill_num,
@@ -263,17 +330,34 @@ class WashingtonApiClient:
             score += 5
         return score
 
-    def _fetch_legislation(self, biennium: str, bill_number: int) -> ET.Element:
+    def _fetch_legislation(self, biennium: str, bill_number: int, bill_num: str) -> ET.Element:
+        cached = self._legislation_cache.get((biennium,bill_num))
+        if cached is not None:
+            return cached
         response = self.service_client.get(
             "/LegislationService.asmx/GetLegislation",
             params={"biennium": biennium, "billNumber": str(bill_number)},
         )
         response.raise_for_status()
         root = ET.fromstring(response.text)
-        legislation = root.find("wa:Legislation", WASHINGTON_XML_NS)
-        if legislation is None:
+        candidates = []
+        expected_prefix = re.match(r'[A-Z]+',bill_num).group(0)
+        for node in root.findall('wa:Legislation',WASHINGTON_XML_NS):
+            identity = self._xml_text(node.find('wa:BillId',WASHINGTON_XML_NS)).split()
+            if (identity and canonical_washington_prefix(identity[0]) == expected_prefix
+                    and self._xml_text(node.find('wa:Biennium',WASHINGTON_XML_NS)) == biennium
+                    and self._xml_text(node.find('wa:BillNumber',WASHINGTON_XML_NS)) == str(bill_number)):
+                candidates.append(node)
+        if not candidates:
             raise ValueError(f"Washington legislation detail did not include {bill_number}")
-        return legislation
+        selected = max(candidates,key=self._version_rank)
+        self._legislation_cache[(biennium,bill_num)] = selected
+        return selected
+
+    def _version_rank(self, node: ET.Element) -> tuple:
+        return (self._xml_text(node.find('wa:Active',WASHINGTON_XML_NS))=='true',
+            int(self._xml_text(node.find('wa:SubstituteVersion',WASHINGTON_XML_NS)) or 0),
+            int(self._xml_text(node.find('wa:EngrossedVersion',WASHINGTON_XML_NS)) or 0))
 
     def _fetch_sponsors(self, biennium: str, bill_id: str) -> list[str]:
         response = self.service_client.get(
@@ -356,6 +440,8 @@ class WashingtonApiClient:
         status = legislation.find("wa:CurrentStatus", WASHINGTON_XML_NS)
         history_line = clean_text(WashingtonApiClient._xml_text(status.find("wa:HistoryLine", WASHINGTON_XML_NS) if status is not None else None))
         match = re.search(r"\bchapter\s+(\d+)\b", history_line, re.IGNORECASE)
+        if match is None and status is not None:
+            match = re.match(r'C\s+(\d+)\s+L\s+\d+', WashingtonApiClient._xml_text(status.find('wa:Status',WASHINGTON_XML_NS)), re.IGNORECASE)
         if match is None:
             return ""
         return f"Chapter {match.group(1)}"

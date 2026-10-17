@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 COPY scripts/migrate_kls_sqlite_to_postgres.py ./scripts/migrate_kls_sqlite_to_postgres.py
+COPY scripts/review_held_summaries.py ./scripts/review_held_summaries.py
 
 EXPOSE 8000
 

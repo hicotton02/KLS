@@ -9,5 +9,6 @@ prometheus-client==0.25.0
 psycopg[binary]<4
 pypdf==5.4.0
 requests==2.34.2
+remotezip==0.12.6
 uvicorn==0.34.2
 yt-dlp==2026.7.4

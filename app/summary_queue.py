@@ -12,7 +12,7 @@ import httpx
 
 from app.content_quality import assess_bill_content
 from app.db import PostgresConnection, _parse_row, connect, init_db, list_bill_amendments
-from app.ollama import GPUQueuePending, OllamaClient
+from app.ollama import GPUQueuePending, OllamaClient, ResponseOutputLimit
 from app.settings import get_settings
 from app.sync_service import _amendment_search_snippets, _build_search_blob, _mark_validated_interpretation
 from app.tagging import extract_bill_tags
@@ -237,9 +237,12 @@ def process_one(work: dict) -> str:
     except GPUQueuePending:
         finish(work, 'waiting', QUEUE_WAIT_ERROR, cooldown=300)
         return 'waiting'
-    except ValueError:
+    except ValueError as exc:
+        reason = ('Summary response exceeded its output limit' if isinstance(exc, ResponseOutputLimit)
+            else 'Summary response was not complete JSON' if isinstance(exc, json.JSONDecodeError)
+            else 'Generated summary did not pass validation')
         finish(work, 'quality_hold' if work['attempts'] < MAX_ATTEMPTS else 'review_hold',
-            'Generated summary did not pass validation', cooldown=21600)
+            reason, cooldown=21600)
         return 'quality_hold'
     except Exception as exc:
         reason = f'{type(exc).__name__}: summary generation failed'

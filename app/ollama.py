@@ -16,6 +16,10 @@ class GPUQueuePending(RuntimeError):
     """A durable request is accepted, but its result is not ready yet."""
 
 
+class ResponseOutputLimit(ValueError):
+    """The backend stopped before its structured response was complete."""
+
+
 class OllamaClient:
     def __init__(self, settings: Settings, *, queue_key: str | None = None):
         self.settings = settings
@@ -50,7 +54,7 @@ class OllamaClient:
             official_digest_text=official_digest_text,
             current_bill_text=current_bill_text,
         )
-        parsed = self._run_json_prompt(prompt, temperature=0.1, top_p=0.9, num_predict=700)
+        parsed = self._run_json_prompt(prompt, temperature=0.1, top_p=0.9, num_predict=1400)
         return self._normalize(parsed)
 
     def fact_check_interpretation(
@@ -70,7 +74,7 @@ class OllamaClient:
             current_bill_text=current_bill_text,
             candidate_interpretation=candidate_interpretation,
         )
-        parsed = self._run_json_prompt(prompt, temperature=0.0, top_p=0.3, num_predict=900)
+        parsed = self._run_json_prompt(prompt, temperature=0.0, top_p=0.3, num_predict=2000)
         return self._normalize_fact_check(parsed)
 
     def analyze_bill_relationship(
@@ -194,8 +198,8 @@ class OllamaClient:
             response = client.post("/api/generate", json=body)
         response.raise_for_status()
         payload = response.json()
-        if schema is not None and payload.get("done_reason") == "length":
-            raise ValueError("Structured response exceeded its output limit; no statements accepted")
+        if payload.get("done_reason") == "length":
+            raise ResponseOutputLimit("Structured response exceeded its output limit; no content accepted")
         content = payload.get("response", "").strip()
         return json.loads(content)
 

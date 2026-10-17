@@ -80,6 +80,10 @@ class CaliforniaApiClient:
             "/faces/billSearchClient.xhtml",
             params={"session_year": california_session_code(year), "house": "Both"},
         )
+        if response.status_code == 403:
+            from app.california_bulk import fetch_bulk_bills
+            return sorted(fetch_bulk_bills(self.client, year, self.settings.california_site_base),
+                key=lambda item: _sort_bill_key(str(item['billNum'])))
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
