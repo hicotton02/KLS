@@ -1,4 +1,5 @@
 import json
+from contextlib import contextmanager
 
 import pytest
 
@@ -244,3 +245,37 @@ def test_real_failure_after_queue_wait_still_stops_at_retry_limit(monkeypatch):
     assert work_row(bid)['status'] == 'review_hold'
     assert work_row(bid)['attempts'] == queue.MAX_ATTEMPTS
     assert queue.claim('wy') is None
+
+
+def test_unchanged_refresh_does_not_write_or_reset_a_retry(monkeypatch):
+    bid = bill()
+    queue.refresh_queue('wy')
+    work = queue.claim('wy')
+    queue.finish(work, 'retry', 'Keep the cooldown', cooldown=3600)
+    original = work_row(bid)
+    statements = []
+    original_connect = queue.connect
+    @contextmanager
+    def observed():
+        with original_connect() as connection:
+            connection.set_trace_callback(statements.append)
+            yield connection
+    monkeypatch.setattr(queue, 'connect', observed)
+    assert queue.refresh_queue('wy') == {'retry': 1}
+    assert not any('INSERT INTO bill_summary_work' in statement for statement in statements)
+    assert work_row(bid) == original
+
+
+def test_busy_refresher_is_skipped_without_touching_work(monkeypatch):
+    bid = bill()
+    queue.refresh_queue('wy')
+    original = work_row(bid)
+    monkeypatch.setattr(queue, '_lock_refresh', lambda *_: False)
+    assert queue.refresh_queue('wy') == {'pending': 1}
+    assert work_row(bid) == original
+
+
+def test_refresh_lock_keys_are_stable_and_state_scoped():
+    assert queue._refresh_lock_key('wy') == queue._refresh_lock_key('wy')
+    assert queue._refresh_lock_key('wy') != queue._refresh_lock_key('us')
+    assert -(2**63) <= queue._refresh_lock_key('wy') < 2**63

@@ -2,6 +2,7 @@
 import json
 import os
 import unittest
+import uuid
 from unittest.mock import patch
 
 from app import db, summary_queue as queue
@@ -20,7 +21,17 @@ def check_postgres_summary_queue():
 
     conn = psycopg.connect(os.environ['KLS_TEST_POSTGRES_URL'], row_factory=dict_row,
         options='-c default_transaction_read_only=off -c statement_timeout=10000')
+    original_key = queue._refresh_lock_key
+    namespace = 'regression:' + uuid.uuid4().hex + ':'
+    lock_patch = patch.object(queue, '_refresh_lock_key', lambda state: original_key(namespace + state))
+    lock_patch.start()
     try:
+        assert queue._lock_refresh(Borrowed(conn), 'wy')
+        with psycopg.connect(os.environ['KLS_TEST_POSTGRES_URL'], row_factory=dict_row,
+                options='-c default_transaction_read_only=off -c statement_timeout=10000') as other:
+            assert not queue._lock_refresh(Borrowed(other), 'wy')
+            assert queue._lock_refresh(Borrowed(other), 'us')
+        conn.rollback()
         conn.execute('CREATE TEMP TABLE bills (LIKE public.bills INCLUDING ALL)')
         for statement in db.SCHEMA.split(';'):
             if statement.strip().startswith('CREATE TABLE IF NOT EXISTS bill_summary_'):
@@ -70,6 +81,7 @@ def check_postgres_summary_queue():
     finally:
         conn.rollback()
         conn.close()
+        lock_patch.stop()
 
 
 @unittest.skipUnless(os.getenv('KLS_TEST_POSTGRES_URL'), 'PostgreSQL integration URL not provided')

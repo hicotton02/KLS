@@ -42,24 +42,45 @@ def source_version(bill: dict, *, include_text: bool = False) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
+def _refresh_lock_key(state: str) -> int:
+    return int.from_bytes(hashlib.sha256(f'kls-summary-refresh:{state}'.encode()).digest()[:8], 'big', signed=True)
+
+
+def _lock_refresh(connection, state: str) -> bool:
+    if not isinstance(connection, PostgresConnection):
+        return True
+    return bool(connection.execute('SELECT pg_try_advisory_xact_lock(?) AS acquired',
+        (_refresh_lock_key(state),)).fetchone()['acquired'])
+
+
 def refresh_queue(state: str) -> dict:
-    columns = ','.join(('id', 'state', 'year', 'bill_num', 'interpretation_json') + SOURCE_FIELDS)
-    lengths = ','.join(f'length(coalesce({key},\'\')) AS {key}_length' for key in TEXT_FIELDS)
+    columns = ','.join('b.' + key for key in ('id', 'state', 'year', 'bill_num', 'interpretation_json') + SOURCE_FIELDS)
+    lengths = ','.join(f'length(coalesce(b.{key},\'\')) AS {key}_length' for key in TEXT_FIELDS)
     with connect() as c:
-        rows = c.execute(f'SELECT {columns},{lengths} FROM bills WHERE state=?', (state,)).fetchall()
-    timestamp = now()
-    entries = []
-    for raw in rows:
-        bill = _parse_row(raw)
-        if assess_bill_content(bill)['summary_ready']:
-            status = 'complete'
-        elif max(bill[f'{key}_length'] for key in TEXT_FIELDS) < 300 or not assess_bill_content(bill)['has_source']:
-            status = 'source_hold'
-        else:
-            status = 'pending'
-        entries.append((bill['id'], state, source_version(bill), status, timestamp, timestamp))
-    with connect() as c:
-        c.executemany("""INSERT INTO bill_summary_work
+        if not _lock_refresh(c, state):
+            return queue_status(state)
+        rows = c.execute(f'''SELECT {columns},{lengths},w.source_version AS queue_source_version,
+            w.status AS queue_status FROM bills b LEFT JOIN bill_summary_work w ON w.bill_id=b.id
+            WHERE b.state=? ORDER BY b.id''', (state,)).fetchall()
+        timestamp = now()
+        entries = []
+        for raw in rows:
+            bill = _parse_row(raw)
+            if assess_bill_content(bill)['summary_ready']:
+                status = 'complete'
+            elif max(bill[f'{key}_length'] for key in TEXT_FIELDS) < 300 or not assess_bill_content(bill)['has_source']:
+                status = 'source_hold'
+            else:
+                status = 'pending'
+            version = source_version(bill)
+            # Even an unchanged ON CONFLICT update locks its row in PostgreSQL.
+            if (bill['queue_source_version'] == version
+                    and not (status == 'complete' and bill['queue_status'] != 'complete')
+                    and not (status == 'pending' and bill['queue_status'] in ('complete', 'source_hold'))):
+                continue
+            entries.append((bill['id'], state, version, status, timestamp, timestamp))
+        if entries:
+            c.executemany("""INSERT INTO bill_summary_work
             (bill_id,state,source_version,status,created_at,updated_at) VALUES (?,?,?,?,?,?)
             ON CONFLICT(bill_id) DO UPDATE SET
             source_version=excluded.source_version,
