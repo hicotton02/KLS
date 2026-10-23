@@ -69,6 +69,36 @@ def test_summary_and_fact_check_have_room_for_complete_json():
     assert transport.payload['options']['num_predict']==2000
 
 
+def test_fact_check_has_bounded_sections_instead_of_unlimited_commentary():
+    transport = _FakeClient()
+    client = object.__new__(OllamaClient)
+    client.settings = SimpleNamespace(ollama_model='test-model')
+    client.clients = [transport]
+    client._client_index = 0
+    client.fact_check_interpretation(bill={'bill':'HR2829'}, status_info={},
+        official_summary_text='Official source', official_digest_text='',
+        current_bill_text='', candidate_interpretation={})
+    schema = transport.payload['format']
+    assert isinstance(schema, dict)
+    assert schema['additionalProperties'] is False
+    fields = schema['properties']
+    assert set(schema['required']) == set(fields)
+    assert fields['what_it_does']['maxItems'] == 6
+    assert fields['who_it_affects']['maxItems'] == 4
+    assert fields['terms_to_know']['maxItems'] == 4
+    assert fields['limits_and_unknowns']['maxItems'] == 3
+    assert fields['removed_claims']['maxItems'] == 3
+    assert fields['validator_notes']['maxItems'] == 2
+    for name in ('what_it_does','who_it_affects','limits_and_unknowns','removed_claims','validator_notes'):
+        assert fields[name]['items']['maxLength'] <= 300
+        assert fields[name].get('minItems', 0) == 0, 'Unsupported sections must be allowed to stay empty'
+    assert fields['terms_to_know']['items']['additionalProperties'] is False
+    prompt = transport.payload['prompt']
+    assert 'Do not include reasoning, plans, self-talk' in prompt
+    assert 'Keep only statements that are supported by the official material.' in prompt
+    assert 'Prefer removing content over guessing.' in prompt
+
+
 def test_valid_looking_but_truncated_plain_json_is_rejected():
     client = object.__new__(OllamaClient)
     client.settings = SimpleNamespace(ollama_model='test-model')

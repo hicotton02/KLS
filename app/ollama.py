@@ -74,7 +74,33 @@ class OllamaClient:
             current_bill_text=current_bill_text,
             candidate_interpretation=candidate_interpretation,
         )
-        parsed = self._run_json_prompt(prompt, temperature=0.0, top_p=0.3, num_predict=2000)
+        # Bound commentary as well as facts; a token cap alone can cut off JSON.
+        def text_list(count: int) -> dict[str, Any]:
+            return {"type": "array", "maxItems": count,
+                    "items": {"type": "string", "maxLength": 300}}
+        fields = {
+            "plain_language_title": {"type": "string", "maxLength": 160},
+            "one_sentence_summary": {"type": "string", "maxLength": 400},
+            "what_it_does": text_list(6),
+            "who_it_affects": text_list(4),
+            "terms_to_know": {
+                "type": "array", "maxItems": 4,
+                "items": {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["term", "meaning"],
+                    "properties": {
+                        "term": {"type": "string", "maxLength": 80},
+                        "meaning": {"type": "string", "maxLength": 240},
+                    },
+                },
+            },
+            "limits_and_unknowns": text_list(3),
+            "removed_claims": text_list(3),
+            "validator_notes": text_list(2),
+        }
+        schema = {"type": "object", "additionalProperties": False,
+                  "required": list(fields), "properties": fields}
+        parsed = self._run_json_prompt(prompt, temperature=0.0, top_p=0.3, num_predict=2000, schema=schema)
         return self._normalize_fact_check(parsed)
 
     def analyze_bill_relationship(
@@ -413,6 +439,10 @@ Return strict JSON with this exact shape:
 
 Output rules:
 - Keep the same overall subject as the candidate explanation.
+- Do not include reasoning, plans, self-talk, or a discussion of how you checked the candidate.
+- Return only the final corrected facts and brief source-based notes.
+- Use at most 6 what_it_does bullets, 4 who_it_affects bullets, 4 terms, and 3 limits_and_unknowns bullets.
+- Use at most 3 removed_claims and 2 validator_notes. Each item must be one short sentence, at most 40 words.
 - "removed_claims" should briefly list items you removed or materially narrowed.
 - "validator_notes" should note any remaining uncertainty that the source itself leaves open.
 - Do not include text outside JSON.
