@@ -7,7 +7,8 @@ import hashlib
 import json
 import uuid
 
-from app.db import connect, get_bill, init_db, update_sync_status, upsert_bill
+from app.content_quality import assess_bill_content
+from app.db import PostgresConnection, _parse_row, connect, get_bill, init_db, update_sync_status, upsert_bill
 from app.federal_api import CongressApiClient, congress_bill_identifier
 from app.settings import get_settings
 
@@ -92,6 +93,70 @@ def pending_work(congresses: list[int], limit: int) -> list[dict]:
             ORDER BY w.attempts,w.congress DESC,w.bill_num LIMIT ?""", [*congresses, utc_now(), limit]).fetchall()]
 
 
+def source_hold_work(congresses: list[int], limit: int) -> list[dict]:
+    if limit <= 0:
+        return []
+    placeholders = ','.join('?' for _ in congresses)
+    timestamp = datetime.now(timezone.utc)
+    cutoff = timestamp - timedelta(hours=6)
+    with connect() as c:
+        rows = c.execute(f"""SELECT w.*,b.id AS bill_id FROM federal_bill_work w
+            JOIN federal_catalog f ON f.congress=w.congress AND f.scanned_at=w.last_seen_at
+            JOIN bills b ON b.state='us' AND b.year=w.congress AND b.bill_num=w.bill_num AND b.special_session_key=-1
+            JOIN bill_summary_work q ON q.bill_id=b.id
+            WHERE w.congress IN ({placeholders}) AND w.processed_version=w.source_version
+              AND q.status='source_hold' AND q.owner IS NULL
+              AND coalesce(b.catch_title,'') NOT LIKE ?
+            ORDER BY coalesce(w.processed_at,'') DESC,w.bill_num""", [*congresses, 'Reserved for %']).fetchall()
+    due = []
+    for row in rows:
+        def parsed(value):
+            date = datetime.fromisoformat(value)
+            return date if date.tzinfo else date.replace(tzinfo=timezone.utc)
+        if row['retry_at'] and parsed(row['retry_at']) > timestamp:
+            continue
+        if row['processed_at'] and parsed(row['processed_at']) > cutoff:
+            continue
+        due.append(dict(row))
+        if len(due) >= min(limit, 20):
+            break
+    return due
+
+
+def refresh_held_source(api: CongressApiClient, row: dict, *, heartbeat=lambda: None) -> bool:
+    with connect() as c:
+        original = c.execute('SELECT * FROM bills WHERE id=?', (row['bill_id'],)).fetchone()
+        work = c.execute('SELECT * FROM bill_summary_work WHERE bill_id=?', (row['bill_id'],)).fetchone()
+    if (original is None or work is None or work['status'] != 'source_hold' or work['owner']
+            or assess_bill_content(_parse_row(original))['summary_ready']):
+        return False
+    payload = refresh_bill(api, row, skip_interpretation=True).payload
+    if (payload['state'], payload['year'], payload['bill_num']) != ('us', row['congress'], row['bill_num']):
+        raise ValueError('Held source identity did not match the inventory')
+    if (max(len(str(payload.get(k) or '')) for k in
+            ('current_bill_text', 'official_summary_text', 'official_digest_text')) < 300
+            or not assess_bill_content(payload)['has_source']):
+        return False
+    heartbeat()
+    # Publication can lag the catalog. Change only source fields, never a saved summary.
+    fields = ('introduced_path', 'current_version_path', 'summary_path', 'digest_path',
+              'official_summary_text', 'official_digest_text', 'current_bill_text',
+              'source_hash', 'source_synced_at', 'updated_at')
+    with connect() as c:
+        if not isinstance(c, PostgresConnection):
+            c.execute('BEGIN IMMEDIATE')
+        lock = ' FOR UPDATE' if isinstance(c, PostgresConnection) else ''
+        current = c.execute('SELECT * FROM bills WHERE id=?' + lock, (row['bill_id'],)).fetchone()
+        current_work = c.execute('SELECT * FROM bill_summary_work WHERE bill_id=?' + lock, (row['bill_id'],)).fetchone()
+        if (current is None or current_work is None or dict(current) != dict(original)
+                or dict(current_work) != dict(work)):
+            return False
+        c.execute('UPDATE bills SET ' + ','.join(k + '=?' for k in fields) + ' WHERE id=?',
+                  [*[payload.get(k) for k in fields], row['bill_id']])
+        c.commit()
+    return True
+
+
 def mark_work(row: dict, error: str | None = None) -> None:
     retry_at = (datetime.now(timezone.utc)+timedelta(hours=6)).isoformat(timespec="seconds") if error else None
     with connect() as c:
@@ -174,6 +239,24 @@ def sync_federal_inventory(congresses=None, limit=None, skip_interpretation=Fals
                     update_sync_status('us', seen=stats.seen, updated=stats.updated, failed=totals['failed'],
                         source_total=totals['source_total'], stored_total=totals['stored'],
                         current_bill_num=row['bill_num'], last_message=f"Federal catch-up: {totals['pending']} records still need source refresh.")
+            for row in source_hold_work(congresses, batch_size - stats.seen):
+                renew()
+                stats.seen += 1
+                try:
+                    recovered = refresh_held_source(api, row, heartbeat=renew)
+                    renew()
+                    mark_work(row)
+                    stats.updated += int(recovered)
+                    stats.skipped += int(not recovered)
+                    log(f"Federal {row['bill_num']}: " + (
+                        'published source text recovered for the summary queue.' if recovered
+                        else 'no new usable source; leaving existing content and summary limits unchanged.'))
+                except Exception as exc:
+                    safe_error = str(exc).replace(settings.congress_api_key, '[redacted]') if settings.congress_api_key else str(exc)
+                    renew()
+                    mark_work(row, safe_error[:500])
+                    stats.failed += 1
+                    log(f"Federal source recheck {row['bill_num']}: {safe_error[:200]}")
         except Exception as exc:
             error = str(exc).replace(settings.congress_api_key, '[redacted]') if settings.congress_api_key else str(exc)
             stats.failed += 1
@@ -182,12 +265,12 @@ def sync_federal_inventory(congresses=None, limit=None, skip_interpretation=Fals
             api.close()
             renew()
             totals = coverage(congresses)
-            complete = error is None and totals['source_total'] is not None and totals['pending']==0 and totals['inventory']==totals['source_total']
+            complete = error is None and stats.failed == 0 and totals['source_total'] is not None and totals['pending']==0 and totals['inventory']==totals['source_total']
             payload = dict(is_running=False, seen=stats.seen, updated=stats.updated, skipped=stats.skipped,
                 failed=max(stats.failed,totals['failed']), interpreted=stats.interpreted, validated=stats.validated,
                 source_total=totals['source_total'], stored_total=totals['stored'], finished_at=utc_now(),
                 current_bill_num='', last_message=error[:300] if error else
-                f"Federal source coverage: {totals['stored']} of {totals['source_total']} stored; {totals['pending']} awaiting refresh; {totals['failed']} held for retry.")
+                f"Federal source coverage: {totals['stored']} of {totals['source_total']} stored; {totals['pending']} awaiting refresh; {max(stats.failed, totals['failed'])} held for retry.")
             if complete:
                 payload['last_success_at'] = utc_now()
             update_sync_status('us', **payload)

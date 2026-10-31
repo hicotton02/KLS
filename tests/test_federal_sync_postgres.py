@@ -37,6 +37,14 @@ def check_postgres_checkpoint():
                 fs.mark_work(row)
                 assert fs.coverage([119])['pending'] == 0
                 assert fs.coverage([119])['failed'] == 0
+            conn.execute('ALTER TABLE bills ADD COLUMN id INTEGER, ADD COLUMN catch_title TEXT')
+            conn.execute("UPDATE bills SET id=1,catch_title='Public services'")
+            conn.execute('CREATE TEMP TABLE bill_summary_work(bill_id INTEGER,status TEXT,owner TEXT)')
+            conn.execute("INSERT INTO bill_summary_work VALUES (1,'source_hold',NULL)")
+            conn.execute("UPDATE federal_bill_work SET processed_at='2000-01-01T00:00:00Z'")
+            assert [r['bill_num'] for r in fs.source_hold_work([119], 10)] == ['HR1']
+            conn.execute("UPDATE bills SET catch_title='Reserved for the Speaker.'")
+            assert fs.source_hold_work([119], 10) == []
     finally:
         conn.rollback()
         conn.close()
