@@ -6,7 +6,7 @@ from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED, Future, ThreadPoo
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
-from app.alaska_api import AlaskaApiClient
+from app.alaska_api import AlaskaApiClient, AlaskaSourceDeferred
 from app.alabama_api import AlabamaApiClient
 from app.arkansas_api import ArkansasApiClient
 from app.arizona_api import ArizonaApiClient
@@ -698,11 +698,15 @@ def sync_alaska(
                     stats.failed += 1
                     log(f"Failed to sync {item['billNum']} ({year}): {exc}")
                     progress.note_failed(item["billNum"], year, str(exc))
+                    if isinstance(exc, AlaskaSourceDeferred):
+                        raise
 
             _drain_futures(pending, stats, existing_index, log, progress=progress, wait_for_all=True)
             progress.note_scope_totals(year, source_total=len(bills), stored_total=count_bills_for_year("ak", year))
             if stop_after_limit:
                 break
+        if stats.failed:
+            raise RuntimeError(f'Alaska source pass is incomplete: {stats.failed} bill checks failed.')
     except Exception as exc:  # noqa: BLE001
         fatal_error = str(exc)
         raise

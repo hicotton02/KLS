@@ -1,17 +1,26 @@
 from __future__ import annotations
 
 import re
+import math
+import time
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from bs4 import BeautifulSoup
 
 from app.http_documents import absolute_url, fetch_document_text
-from app.http_retry import get_source_with_retries
+from app.http_retry import retry_after_seconds
+from app.db import open_pipeline_circuit_breaker, pipeline_circuit_breaker_is_open
+from app.alaska_source_cache import cached_detail, catalog_signature, ensure_source_cache, save_detail
 from app.settings import Settings
 
 
 ALASKA_BILL_NUMBER_PATTERN = re.compile(r"^(?:HB|SB)\d+$", re.IGNORECASE)
+
+
+class AlaskaSourceDeferred(RuntimeError):
+    """An access or transport hold must stop this pass, not hammer later bills."""
 
 
 def alaska_legislature_for_year(year: int) -> int:
@@ -35,20 +44,56 @@ def parse_alaska_date(value: str | None) -> str:
 class AlaskaApiClient:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self._last_request = 0.0
+        self._catalog_items: dict[str, dict] = {}
+        ensure_source_cache()
         self.client = httpx.Client(
             base_url=self.settings.alaska_site_base,
             headers={"User-Agent": "keeping-law-simple/1.0"},
-            timeout=self.settings.request_timeout_seconds,
+            timeout=httpx.Timeout(30, connect=8),
             follow_redirects=True,
         )
 
     def close(self) -> None:
         self.client.close()
 
+    def _source_get(self, path: str, **kwargs: Any) -> httpx.Response:
+        for attempt in range(3):
+            if pipeline_circuit_breaker_is_open('alaska-source'):
+                raise AlaskaSourceDeferred('Alaska source is in a saved cooldown; existing records retained.')
+            time.sleep(max(0.0, 3.0 - (time.monotonic() - self._last_request)))
+            self._last_request = time.monotonic()
+            try:
+                response = self.client.get(path, **kwargs)
+            except (httpx.TimeoutException, httpx.TransportError):
+                if attempt < 2:
+                    continue
+                self._defer('Alaska source timed out after three bounded attempts.', 900)
+            delay = retry_after_seconds(response.headers.get('retry-after'))
+            if response.status_code == 403:
+                self._defer('Alaska source returned HTTP 403; access remains blocked.', 900)
+            if response.status_code == 429:
+                if delay == 0 and attempt < 2:
+                    continue
+                self._defer('Alaska source requested an HTTP 429 cooldown.', max(900, math.ceil(delay or 0)))
+            if response.status_code in (500, 502, 503, 504):
+                if delay and delay > 30:
+                    self._defer('Alaska source requested a server cooldown.', math.ceil(delay))
+                if attempt < 2:
+                    continue
+                self._defer('Alaska source server failed three bounded attempts.', 900)
+            response.raise_for_status()
+            return response
+        raise AlaskaSourceDeferred('Alaska source retry limit reached.')
+
+    @staticmethod
+    def _defer(reason: str, seconds: int) -> None:
+        until = open_pipeline_circuit_breaker('alaska-source', cooldown_seconds=seconds, reason=reason)
+        raise AlaskaSourceDeferred(f'{reason} Retry after {until}.')
+
     def fetch_year_bills(self, year: int) -> list[dict[str, Any]]:
         legislature = alaska_legislature_for_year(year)
-        response = get_source_with_retries(
-            self.client,
+        response = self._source_get(
             f"/basis/Bill/Range/{legislature}",
             params={"bill1": "", "bill2": ""},
         )
@@ -79,10 +124,24 @@ class AlaskaApiClient:
                     "detailPath": absolute_url(str(response.url), detail_link.get("href") if detail_link else None),
                 }
             )
+        if not items:
+            raise AlaskaSourceDeferred('Alaska returned no recognizable bills; coverage is not verified.')
+        for item in items:
+            link = urlparse(item['detailPath'])
+            if (link.hostname != urlparse(str(self.settings.alaska_site_base)).hostname
+                    or link.path.lower() != f'/basis/bill/detail/{legislature}'):
+                raise AlaskaSourceDeferred('Alaska returned a detail link outside the expected legislature.')
+            self._catalog_items[item['detailPath']] = item
         return items
 
     def fetch_bill_detail(self, detail_path: str) -> dict[str, Any]:
-        response = get_source_with_retries(self.client, detail_path)
+        item = self._catalog_items.get(detail_path)
+        signature = catalog_signature(item) if item else ''
+        if signature:
+            checkpoint = cached_detail(detail_path, signature)
+            if checkpoint is not None:
+                return checkpoint
+        response = self._source_get(detail_path)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -117,7 +176,7 @@ class AlaskaApiClient:
         if long_title:
             summary_html += f"<p>{long_title}</p>"
 
-        return {
+        detail = {
             "bill": bill_num,
             "billType": bill_num[:2],
             "catchTitle": short_title or bill_num,
@@ -152,6 +211,11 @@ class AlaskaApiClient:
             "amendments": amendments,
             "officialPage": str(response.url),
         }
+        if not ALASKA_BILL_NUMBER_PATTERN.fullmatch(bill_num) or (item and bill_num != item['billNum']):
+            raise AlaskaSourceDeferred('Alaska returned a missing or mismatched bill identity.')
+        if signature:
+            save_detail(detail_path, signature, detail)
+        return detail
 
     def fetch_public_document_text(self, url: str | None) -> str:
         return fetch_document_text(self.client, url)

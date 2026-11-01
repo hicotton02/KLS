@@ -507,6 +507,21 @@ BILL_LIST_COLUMNS = [
     "updated_at",
 ]
 BILL_SEARCH_COLUMNS = [*BILL_LIST_COLUMNS, "search_blob"]
+RECENT_BILL_ORDER_SQL = """CASE WHEN SUBSTR(last_action_date, 5, 1) = '-'
+                          AND SUBSTR(last_action_date, 8, 1) = '-'
+                      THEN last_action_date ELSE '' END DESC,
+                 updated_at DESC, year DESC, bill_num ASC"""
+
+
+def recent_bill_index_sql(*, concurrently: bool = False) -> str:
+    return f"""CREATE INDEX {'CONCURRENTLY ' if concurrently else ''}IF NOT EXISTS idx_bills_recent_validated_listing
+        ON bills ((CASE WHEN SUBSTR(last_action_date, 5, 1) = '-'
+                           AND SUBSTR(last_action_date, 8, 1) = '-'
+                       THEN last_action_date ELSE '' END) DESC,
+                  updated_at DESC, year DESC, bill_num ASC)
+        WHERE interpretation_json LIKE '%validated%'"""
+
+
 POSTGRES_BILL_SEARCH_VECTOR_SQL = """
 to_tsvector(
     'simple',
@@ -771,6 +786,7 @@ def _ensure_bill_search_index(connection: sqlite3.Connection | PostgresConnectio
             ON bills USING GIN ({POSTGRES_BILL_SEARCH_VECTOR_SQL})
             """
         )
+        connection.execute(recent_bill_index_sql())
 
 
 def _ensure_page_view_columns(connection: sqlite3.Connection) -> None:
@@ -896,17 +912,17 @@ def get_jurisdiction_rollups(states: list[str]) -> dict[str, dict[str, Any]]:
                 SELECT
                     bills.state,
                     latest_years.latest_year,
-                    SUM(CASE WHEN bills.year = latest_years.latest_year THEN 1 ELSE 0 END) AS total,
-                    SUM(CASE WHEN bills.year = latest_years.latest_year AND bills.outcome = 'active' THEN 1 ELSE 0 END) AS active_count,
-                    SUM(CASE WHEN bills.year = latest_years.latest_year AND bills.outcome = 'passed' THEN 1 ELSE 0 END) AS passed_count,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN bills.outcome = 'active' THEN 1 ELSE 0 END) AS active_count,
+                    SUM(CASE WHEN bills.outcome = 'passed' THEN 1 ELSE 0 END) AS passed_count,
                     SUM(
                         CASE
-                            WHEN bills.year = latest_years.latest_year AND bills.outcome IN ('failed', 'replaced') THEN 1
+                            WHEN bills.outcome IN ('failed', 'replaced') THEN 1
                             ELSE 0
                         END
                     ) AS failed_count
                 FROM bills
-                JOIN latest_years ON latest_years.state = bills.state
+                JOIN latest_years ON latest_years.state = bills.state AND latest_years.latest_year = bills.year
                 GROUP BY bills.state, latest_years.latest_year
             """
             rows = connection.execute(sql, normalized_states).fetchall()
@@ -1003,10 +1019,7 @@ def list_recent_bills(limit: int = 8) -> list[dict[str, Any]]:
         SELECT {', '.join(BILL_LIST_COLUMNS)}
         FROM bills
         WHERE interpretation_json LIKE ?
-        ORDER BY CASE WHEN SUBSTR(last_action_date, 5, 1) = '-'
-                          AND SUBSTR(last_action_date, 8, 1) = '-'
-                      THEN last_action_date ELSE '' END DESC,
-                 updated_at DESC, year DESC, bill_num ASC
+        ORDER BY {RECENT_BILL_ORDER_SQL}
         LIMIT ?
     """
     with connect() as connection:

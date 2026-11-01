@@ -1072,12 +1072,15 @@ def _state_page_context(
     query: str,
     status: str,
     tag: str,
+    *,
+    bill_limit: int | None = None,
 ) -> dict[str, object]:
     fallback_years = _fallback_years_for_state(jurisdiction.state_code)
     available_years = list_years(jurisdiction.state_code or "") or fallback_years
     selected_year = year or (available_years[0] if available_years else None)
     bills = (
-        list_bills(jurisdiction.state_code or "", selected_year, query=query, status=status, tag=tag)
+        list_bills(jurisdiction.state_code or "", selected_year, query=query, status=status, tag=tag,
+                   limit=bill_limit if not query.strip() and not tag.strip() else None)
         if selected_year is not None
         else []
     )
@@ -1472,7 +1475,7 @@ def api_area(
     jurisdiction = get_jurisdiction(area_slug)
     if jurisdiction is None or jurisdiction.coverage_status != "live":
         raise HTTPException(status_code=404, detail="Coverage area not found")
-    context = _state_page_context(request, jurisdiction, year, q, status, tag)
+    context = _state_page_context(request, jurisdiction, year, q, status, tag, bill_limit=limit)
     bills = [
         _bill_summary_json(jurisdiction, bill)
         for bill in list(context["bills"])[:limit]
