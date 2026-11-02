@@ -149,10 +149,12 @@ export type VoteExplanation = {
   statement_date: string | null;
   profile_href: string;
   source: {
+    kind?: "article" | "recording";
+    publisher?: string | null;
     label: string;
     url: string;
     title: string | null;
-    start_seconds: number;
+    start_seconds: number | null;
   };
 };
 

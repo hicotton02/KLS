@@ -176,7 +176,7 @@ export default async function BillPage({ params, searchParams }: { params: Route
             <>
               <div className="explanation-list">
                 {voteExplanations.map((explanation) => (
-                  <article className="vote-explanation" key={`${explanation.roll_call_key}-${explanation.member_key}`}>
+                  <article className="vote-explanation" key={`${explanation.roll_call_key}-${explanation.member_key}-${explanation.source.url}`}>
                     <header className="explanation-header">
                       <div>
                         <h3><Link href={explanation.profile_href}>{explanation.name}</Link></h3>
@@ -188,14 +188,16 @@ export default async function BillPage({ params, searchParams }: { params: Route
                       <div>
                         <p className="explanation-label">Why they voted this way</p>
                         <p className="explanation-reason">{explanation.reason}</p>
+                        {explanation.source.kind === "article" ? <details><summary>Vote details</summary><p>{explanation.action} · {formatBillDate(explanation.vote_date)}</p></details> : null}
                       </div>
                       <div className="explanation-source">
                         <MessageSquareQuote size={20} aria-hidden="true" />
                         <div>
-                          <span>Public statement</span>
-                          <small>{explanation.source.label}</small>
+                          <span>{explanation.source.kind === "article" ? "Published reason" : "Public statement"}</span>
+                          <small>{explanation.source.label}{explanation.source.kind === "article" && explanation.statement_date ? ` · ${formatBillDate(explanation.statement_date)}` : ""}</small>
                           <a href={explanation.source.url} target="_blank" rel="noreferrer">
-                            <PlayCircle size={17} aria-hidden="true" /> Watch the statement
+                            {explanation.source.kind === "article" ? <ExternalLink size={17} aria-hidden="true" /> : <PlayCircle size={17} aria-hidden="true" />}
+                            {explanation.source.kind === "article" ? "Read the article" : "Watch the statement"}
                           </a>
                         </div>
                       </div>

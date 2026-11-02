@@ -15,6 +15,7 @@ from app.content_corrections import apply_content_corrections
 from app.content_quality import assess_bill_content
 from app.text_utils import iso_now
 from app.wyoming_media_sources import normalize_wyoming_media_url, wyoming_media_url_variants
+from app.news_schema import NEWS_SCHEMA, VOTE_EVIDENCE_CTE
 
 try:
     import psycopg
@@ -717,6 +718,7 @@ def _schema_revision() -> str:
     payload = json.dumps(
         {
             "schema": SCHEMA,
+            "news_schema": NEWS_SCHEMA,
             "bill_columns": BILL_COLUMN_DEFINITIONS,
             "page_view_columns": PAGE_VIEW_COLUMN_DEFINITIONS,
             "sync_status_columns": SYNC_STATUS_COLUMN_DEFINITIONS,
@@ -728,7 +730,7 @@ def _schema_revision() -> str:
 
 
 def _apply_schema(connection: sqlite3.Connection | PostgresConnection) -> None:
-    connection.executescript(SCHEMA)
+    connection.executescript(SCHEMA + NEWS_SCHEMA)
     _ensure_bill_columns(connection)
     _ensure_bill_search_index(connection)
     _ensure_page_view_columns(connection)
@@ -2212,14 +2214,14 @@ def list_bill_vote_explanations(
 ) -> list[dict[str, Any]]:
     with connect() as connection:
         rows = connection.execute(
-            """
+            VOTE_EVIDENCE_CTE + """
             SELECT explanations.*,
                    COALESCE(votes.party, identity.party) AS party,
                    COALESCE(votes.district, identity.district) AS district,
                    roll_calls.chamber,
                    roll_calls.vote_date,
                    roll_calls.action
-            FROM bill_vote_explanations AS explanations
+            FROM vote_evidence AS explanations
             LEFT JOIN bill_roll_call_votes AS votes
               ON votes.state = explanations.state
              AND votes.year = explanations.year
@@ -2277,14 +2279,14 @@ def list_legislator_vote_explanations(
 
     with connect() as connection:
         rows = connection.execute(
-            f"""
+            VOTE_EVIDENCE_CTE + f"""
             SELECT explanations.*,
                    COALESCE(votes.party, identity.party) AS party,
                    COALESCE(votes.district, identity.district) AS district,
                    roll_calls.chamber,
                    roll_calls.vote_date,
                    roll_calls.action
-            FROM bill_vote_explanations AS explanations
+            FROM vote_evidence AS explanations
             LEFT JOIN bill_roll_call_votes AS votes
               ON votes.state = explanations.state
              AND votes.year = explanations.year
@@ -2327,12 +2329,12 @@ def list_vote_explanation_bill_keys(
     params.append(max(1, min(int(limit), 200)))
     with connect() as connection:
         rows = connection.execute(
-            f"""
+            VOTE_EVIDENCE_CTE + f"""
             SELECT year, special_session_key, special_session_value, bill_num,
                    COUNT(*) AS explanation_count,
                    MAX(statement_date) AS latest_statement_date,
                    MAX(updated_at) AS latest_explanation_at
-            FROM bill_vote_explanations
+            FROM vote_evidence
             WHERE {' AND '.join(clauses)}
             GROUP BY year, special_session_key, special_session_value, bill_num
             ORDER BY latest_statement_date DESC, year DESC, bill_num ASC
@@ -2371,9 +2373,9 @@ def get_vote_explanation_overview(state: str) -> dict[str, Any]:
             (state,),
         ).fetchone()
         explanations = connection.execute(
-            """
+            VOTE_EVIDENCE_CTE + """
             SELECT COUNT(*) AS explanation_count, MAX(source_synced_at) AS latest_explanation_at
-            FROM bill_vote_explanations
+            FROM vote_evidence
             WHERE state = ? AND review_status IN ('publishable', 'curated')
             """,
             (state,),
@@ -2424,8 +2426,8 @@ def count_bill_vote_explanations(
 ) -> int:
     with connect() as connection:
         row = connection.execute(
-            """
-            SELECT COUNT(*) AS total FROM bill_vote_explanations
+            VOTE_EVIDENCE_CTE + """
+            SELECT COUNT(*) AS total FROM vote_evidence
             WHERE state = ? AND year = ? AND bill_num = ? AND special_session_key = ?
               AND review_status IN ('publishable', 'curated')
             """,

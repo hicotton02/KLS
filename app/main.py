@@ -1008,6 +1008,7 @@ def _source_url_at_time(source_url: str, seconds: int) -> str:
 def _vote_explanation_json(explanation: dict[str, object]) -> dict[str, object]:
     chamber = str(explanation.get("chamber") or "")
     start_seconds = max(0, int(explanation.get("source_start_seconds") or 0))
+    is_article = explanation.get("source_kind") in {"reported_direct_quote", "reported_paraphrase"}
     return {
         "member_key": explanation.get("member_key"),
         "name": explanation.get("lawmaker_name"),
@@ -1023,10 +1024,12 @@ def _vote_explanation_json(explanation: dict[str, object]) -> dict[str, object]:
         "statement_date": explanation.get("statement_date"),
         "profile_href": f"/area/wyoming/legislators/{explanation.get('member_key')}",
         "source": {
-            "label": f"Floor statement at {_seconds_label(start_seconds)}",
-            "url": _source_url_at_time(str(explanation.get("source_url") or ""), start_seconds),
+            "kind": "article" if is_article else "recording",
+            "publisher": explanation.get("source_publisher"),
+            "label": explanation.get("source_publisher") if is_article else f"Floor statement at {_seconds_label(start_seconds)}",
+            "url": str(explanation.get("source_url") or "") if is_article else _source_url_at_time(str(explanation.get("source_url") or ""), start_seconds),
             "title": explanation.get("source_title"),
-            "start_seconds": start_seconds,
+            "start_seconds": None if is_article else start_seconds,
         },
     }
 

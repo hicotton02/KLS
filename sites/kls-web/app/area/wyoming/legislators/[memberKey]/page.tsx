@@ -259,7 +259,7 @@ export default async function LegislatorVotingRecordPage({
         {publishedReasons.length ? (
           <div className="citizen-beta-reason-grid">
             {publishedReasons.map(({ bill, explanation }) => (
-              <article className="citizen-beta-reason" key={`${bill.year}-${bill.bill_num}-${explanation.roll_call_key}`}>
+              <article className="citizen-beta-reason" key={`${bill.year}-${bill.bill_num}-${explanation.roll_call_key}-${explanation.source.url}`}>
                 <div className="citizen-beta-reason-top">
                   <div>
                     <span>{bill.bill_num}</span>
@@ -272,7 +272,7 @@ export default async function LegislatorVotingRecordPage({
                   <p>{explanation.reason}</p>
                 </div>
                 <a href={explanation.source.url} target="_blank" rel="noreferrer">
-                  Watch the original statement <ArrowUpRight size={16} aria-hidden="true" />
+                  {explanation.source.kind === "article" ? `Read the article · ${explanation.source.publisher || explanation.source.label}` : "Watch the original statement"} <ArrowUpRight size={16} aria-hidden="true" />
                 </a>
               </article>
             ))}

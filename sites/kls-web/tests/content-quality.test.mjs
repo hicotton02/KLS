@@ -52,3 +52,33 @@ test("bill pages fail closed for unfinished explanations while keeping useful ar
     globalThis.fetch = originalFetch;
   }
 });
+
+test("news reasons name their publisher and link to the article without a video timestamp", async () => {
+  try {
+    const data = fixture(true, true);
+    data.roll_calls = [{roll_call_key: "third-1", chamber: "H", counts: {}, members: []}];
+    data.vote_explanations = [{name: "Jane Citizen", member_key: "wy-123", party: "R", district: "H01",
+      profile_href: "/area/wyoming/legislators/wy-123", vote: "no", reason: "She said it would raise local costs.",
+      statement_date: "2026-03-07", vote_date: "2026-03-05", action: "H 3rd Reading:Passed", roll_call_key: "third-1",
+      source: {kind: "article", publisher: "Cowboy State Daily", label: "Cowboy State Daily",
+        url: "https://cowboystatedaily.com/2026/03/07/reported-vote/", title: "Reported vote", start_seconds: null}}];
+    globalThis.fetch = async (input, init) => {
+      if (String(input instanceof Request ? input.url : input).includes("content-fixture.invalid/api/v1/areas/wyoming/bills/")) return Response.json(data);
+      return originalFetch(input, init);
+    };
+    const url = new URL("../dist/server/index.js?case=news-reason", import.meta.url);
+    const {default: worker} = await import(url.href);
+    const response = await worker.fetch(new Request("https://www.keepinglawsimple.org/area/wyoming/bill/2026/HB0001", {
+      headers: {accept: "text/html", host: "www.keepinglawsimple.org"},
+    }), {ASSETS: {fetch: async () => new Response("Not found", {status: 404})}}, {waitUntil() {}, passThroughOnException() {}});
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /Cowboy State Daily/);
+    assert.match(html, /Mar 7, 2026/);
+    assert.match(html, /Read the article/);
+    assert.match(html, /Vote details/);
+    assert.doesNotMatch(html, /Watch the statement|Floor statement at|#t=|\?t=/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
