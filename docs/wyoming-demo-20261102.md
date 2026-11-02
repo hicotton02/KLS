@@ -34,8 +34,11 @@ Zero active bills in the current list reflects the recorded outcomes of these
   published/curated reasons and 892,823 stored member votes were preserved.
 - All 335 current bill pages/APIs and 97 stored voting-record pages/APIs passed,
   along with all 22 stored years, search, filters, health/readiness, and invalid
-  route checks. This was 925 checks, repeated after the main backend repair.
-  No failures; the repeat sweep had no responses over three seconds.
+  route checks. This was 925 checks, repeated after the main backend repair and
+  again after the final historical-profile fix. No failures. The last sweep's
+  only response above three seconds was the large HB0001 budget page at 3.063 s.
+  Three separate repeats took 3.265 s, 1.625 s, and 2.782 s. Allow about three
+  seconds for that particularly large record; the suggested SF0101 path is faster.
 
 ## Repairs
 
@@ -70,7 +73,8 @@ No quality check was weakened to fill these gaps.
 The current-year voting directory includes four unresolved surname-only source
 records: Anderson, Cooper, Jones, and Olsen. They were not forced onto a person
 where the historical name match is ambiguous. Do not describe the directory's
-record count as the number of sitting lawmakers. The fresh official roster has
+record count as the number of sitting lawmakers. An older 2025 compound-surname
+label is also still unmerged. The fresh official roster has
 62 House members and 31 senators. The tested Barlow and Scott Smith searches
 each return one identified person.
 
@@ -105,6 +109,8 @@ Target verified before changes: `kubernetes-admin@kubernetes`,
   and mobile. This included actual search submissions, source/vote expansion,
   one Barlow result, canonical Laura search, 2019 year entry, and the corrected
   2020 House/District 3 profile label. No page errors or horizontal overflow.
+- Fourteen further public desktop/mobile asset checks passed, including font
+  downloads, year validation, and the absence of JavaScript/asset errors.
 - Both public deployments finished at 2/2 ready with zero new pod restarts,
   no fresh application errors, and no warning events on their pods.
 - Working-checkout backend: 477 passed, two optional checks skipped. Clean
@@ -127,6 +133,8 @@ instead. No network policy was changed.
 
 Private test pods were removed using UID/resource-version checks after tests;
 the local debug tunnel was closed. Public workloads, stored records, and prior
-source-recovery Jobs were left intact.
+source-recovery Jobs were left intact. The two failed private build/backup Jobs
+were removed after their diagnostics were retained. Successful backup/readback
+Jobs retain the normal expiry policy. The remote debug forward was also closed.
 
 Detailed reports and screenshots are in ignored `tmp/demo-20261102-*` artifacts.
