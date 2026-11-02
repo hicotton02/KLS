@@ -1,5 +1,7 @@
 FROM node:22-bookworm-slim AS build
 
+ENV NODE_OPTIONS=--max-old-space-size=2048
+
 WORKDIR /app
 
 COPY package.json package-lock.json ./

@@ -66,7 +66,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: sync
-              image: registry.skazproconsulting.com/keeping-law-simple/web:20261031-alaska2@sha256:dcd7b6eaaf8074a4267f6f12904169e3962c9195d46d7551a18f300018b3be3e
+              image: registry.skazproconsulting.com/keeping-law-simple/web:20261102-demo1-sync@sha256:146c98931cd1815b852e5c532b21391ba0ddf1d15279b88ac4edf8e69b87a66d
               imagePullPolicy: IfNotPresent
               command:
                 - sh

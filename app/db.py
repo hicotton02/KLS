@@ -950,7 +950,7 @@ def list_available_tags(state: str | None = None, year: int | None = None) -> li
         clauses.append("year = ?")
         params.append(year)
 
-    sql = "SELECT bill_tags_json FROM bills"
+    sql = "SELECT DISTINCT bill_tags_json FROM bills"
     if clauses:
         sql += f" WHERE {' AND '.join(clauses)}"
 
@@ -2214,8 +2214,8 @@ def list_bill_vote_explanations(
         rows = connection.execute(
             """
             SELECT explanations.*,
-                   votes.party,
-                   votes.district,
+                   COALESCE(votes.party, identity.party) AS party,
+                   COALESCE(votes.district, identity.district) AS district,
                    roll_calls.chamber,
                    roll_calls.vote_date,
                    roll_calls.action
@@ -2227,6 +2227,10 @@ def list_bill_vote_explanations(
              AND votes.bill_num = explanations.bill_num
              AND votes.roll_call_key = explanations.roll_call_key
              AND votes.member_key = explanations.member_key
+            LEFT JOIN legislator_vote_summary_cache AS identity
+              ON identity.state = explanations.state
+             AND identity.member_key = explanations.member_key
+             AND identity.year = explanations.year
             LEFT JOIN bill_roll_calls AS roll_calls
               ON roll_calls.state = explanations.state
              AND roll_calls.year = explanations.year
@@ -2275,8 +2279,8 @@ def list_legislator_vote_explanations(
         rows = connection.execute(
             f"""
             SELECT explanations.*,
-                   votes.party,
-                   votes.district,
+                   COALESCE(votes.party, identity.party) AS party,
+                   COALESCE(votes.district, identity.district) AS district,
                    roll_calls.chamber,
                    roll_calls.vote_date,
                    roll_calls.action
@@ -2288,6 +2292,10 @@ def list_legislator_vote_explanations(
              AND votes.bill_num = explanations.bill_num
              AND votes.roll_call_key = explanations.roll_call_key
              AND votes.member_key = explanations.member_key
+            LEFT JOIN legislator_vote_summary_cache AS identity
+              ON identity.state = explanations.state
+             AND identity.member_key = explanations.member_key
+             AND identity.year = explanations.year
             LEFT JOIN bill_roll_calls AS roll_calls
               ON roll_calls.state = explanations.state
              AND roll_calls.year = explanations.year
@@ -2463,7 +2471,7 @@ def _legislator_vote_source_marker(
         (state,),
     ).fetchone()
     values = dict(row) if row is not None else {}
-    return f"{int(values.get('total') or 0)}:{str(values.get('latest_updated_at') or '')}"
+    return f"identity-v2:{int(values.get('total') or 0)}:{str(values.get('latest_updated_at') or '')}"
 
 
 def _single_surname(value: object) -> str | None:
@@ -2580,6 +2588,34 @@ def refresh_legislator_vote_summaries(state: str) -> None:
             (state,),
         ).fetchall()
 
+        known_identity_rows = connection.execute(
+            """
+            SELECT member_key, year,
+                   MAX(source_legislator_id) AS source_legislator_id,
+                   MAX(legislator_name) AS legislator_name,
+                   MAX(party) AS party, MAX(district) AS district, MAX(chamber) AS chamber
+            FROM bill_roll_call_votes
+            WHERE state = ? AND source_legislator_id IS NOT NULL AND source_legislator_id <> ''
+            GROUP BY member_key, year
+            ORDER BY year DESC
+            """,
+            (state,),
+        ).fetchall()
+        known_identities: dict[str, dict[str, Any]] = {}
+        for row in known_identity_rows:
+            known_identities.setdefault(str(row["member_key"]), dict(row))
+        summaries = [dict(row) for row in summary_rows]
+        for row in summaries:
+            known = known_identities.get(str(row["member_key"]))
+            if row.get("source_legislator_id") or known is None:
+                continue
+            # A surname-only vote must not erase a previously identified person.
+            row["source_legislator_id"] = known["source_legislator_id"]
+            row["legislator_name"] = known["legislator_name"]
+            if row.get("chamber") == known.get("chamber"):
+                for field in ("party", "district"):
+                    row[field] = row.get(field) or known.get(field)
+
         connection.execute("DELETE FROM legislator_vote_summary_cache WHERE state = ?", (state,))
         if summary_rows:
             connection.executemany(
@@ -2600,7 +2636,7 @@ def refresh_legislator_vote_summaries(state: str) -> None:
                         "state": state,
                         "updated_at": refreshed_at,
                     }
-                    for row in summary_rows
+                    for row in summaries
                 ],
             )
         connection.execute(
@@ -2815,15 +2851,17 @@ def get_legislator_voting_record(
     coverage_years = [selected_year] if selected_year is not None else available_years
     year_placeholders = ", ".join("?" for _ in coverage_years)
     with connect() as connection:
+        identity_year_clause = " AND year = ?" if selected_year is not None else ""
+        identity_params = (state, canonical_member_key, selected_year) if selected_year is not None else (state, canonical_member_key)
         identity_row = connection.execute(
-            """
+            f"""
             SELECT source_legislator_id, legislator_name, party, district, chamber
             FROM legislator_vote_summary_cache
-            WHERE state = ? AND member_key = ?
+            WHERE state = ? AND member_key = ?{identity_year_clause}
             ORDER BY year DESC
             LIMIT 1
             """,
-            (state, canonical_member_key),
+            identity_params,
         ).fetchone()
         identity = dict(identity_row) if identity_row is not None else {}
         coverage_chamber = identity.get("chamber") or latest.get("chamber")
@@ -3046,7 +3084,8 @@ def _query_bills(
             params.append(status)
     with connect() as connection:
         tokens = _search_tokens(query)
-        if tokens and isinstance(connection, PostgresConnection):
+        postgres_search = bool(tokens) and isinstance(connection, PostgresConnection)
+        if postgres_search:
             full_text_query = " OR ".join(f'"{token}"' for token in tokens[:6])
             clauses.append(
                 f"{POSTGRES_BILL_SEARCH_VECTOR_SQL} @@ websearch_to_tsquery('simple', ?)"
@@ -3091,6 +3130,22 @@ def _query_bills(
                 candidate_limit = min(max(candidate_limit * 5, 100), 500)
             sql += " LIMIT ?"
             params.append(candidate_limit)
+        if postgres_search:
+            # Match through the GIN index before sorting; a year-index scan can
+            # otherwise rebuild a text vector for thousands of unrelated bills.
+            where_sql = " WHERE " + " AND ".join(clauses)
+            selected_ids = "SELECT id FROM search_matches"
+            if order_sql:
+                selected_ids += " ORDER BY " + order_sql
+            if limit is not None:
+                selected_ids += " LIMIT ?"
+            sql = (
+                "WITH search_matches AS MATERIALIZED ("
+                "SELECT id, year, last_action_date, bill_num FROM bills" + where_sql + ") "
+                f"SELECT {', '.join(columns)} FROM bills WHERE id IN ({selected_ids})"
+            )
+            if order_sql:
+                sql += " ORDER BY " + order_sql
         rows = connection.execute(sql, params).fetchall()
     return [_parse_row(row) for row in rows if row is not None]
 

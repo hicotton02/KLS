@@ -58,7 +58,7 @@ export default async function SearchPage({ searchParams }: { searchParams: Searc
         </label>
         <label className="filter-field filter-year">
           <span>Year</span>
-          <input type="number" name="year" min="2020" defaultValue={filters.year} placeholder="Any" />
+          <input type="number" name="year" min="1" defaultValue={filters.year} placeholder="Any" />
         </label>
         <label className="filter-field">
           <span>Status</span>

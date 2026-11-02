@@ -30,6 +30,15 @@ async function render(pathname = "/", origin = "http://localhost") {
   );
 }
 
+test("historical bill search accepts years before 2020", async () => {
+  const response = await render("/search?year=2019&area=wy", "https://www.keepinglawsimple.org");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  const yearInput = html.match(/<input\b[^>]*name="year"[^>]*>/)?.[0] ?? "";
+  assert.match(yearInput, /min="1"/);
+  assert.match(yearInput, /value="2019"/);
+});
+
 test("server-renders the KLS home page", async () => {
   const response = await render();
   assert.equal(response.status, 200);
