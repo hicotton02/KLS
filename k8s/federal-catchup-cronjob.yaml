@@ -36,7 +36,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: worker
-              image: registry.skazproconsulting.com/keeping-law-simple/web:20261031-source-holds2@sha256:bccd2d1a90a5bb37fe9777a7044703ff68710d4800d4f5125410408968541334
+              image: registry.skazproconsulting.com/keeping-law-simple/web:20261121-record3-federal@sha256:c4803a0e0337f6e9e62bf8fedd27f44448dbff97ae17817e3797fc132fe214ec
               command: [python, -m, app.federal_sync, --limit, "100"]
               env:
                 - name: PGPASSWORD

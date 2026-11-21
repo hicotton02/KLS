@@ -1,0 +1,4 @@
+# Overlay each live source-worker image; do not replace its other state adapters.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY app/federal_api.py app/federal_record_text.py /app/app/

@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from app.settings import Settings
+from app.federal_record_text import cited_record_locations, extract_record_bill_text
 from app.text_utils import html_to_text
 
 
@@ -68,6 +69,8 @@ class CongressApiClient:
             follow_redirects=True,
         )
         self._last_request_at = 0.0
+        self._latest_actions: dict[tuple[int, str, str], list[dict]] = {}
+        self._record_text: dict[str, str] = {}
 
     def close(self) -> None:
         self.client.close()
@@ -148,9 +151,12 @@ class CongressApiClient:
     def fetch_bill_detail(self, congress: int, bill_type: str, number: str | int) -> dict[str, Any]:
         payload = self._request_json(f"/bill/{congress}/{str(bill_type).lower()}/{number}")
         bill = payload.get("bill")
-        if isinstance(bill, dict):
-            return bill
-        return payload
+        detail = bill if isinstance(bill, dict) else payload
+        key = (congress, str(bill_type).upper(), str(number))
+        if (detail.get('congress'), str(detail.get('type')).upper(), str(detail.get('number'))) == key:
+            action = detail.get('latestAction') or {}
+            self._latest_actions[key] = [{'statusDate': action.get('actionDate'), 'statusMessage': action.get('text')}]
+        return detail
 
     def fetch_bill_summaries(self, congress: int, bill_type: str, number: str | int) -> list[dict[str, Any]]:
         payload = self._request_json(f"/bill/{congress}/{str(bill_type).lower()}/{number}/summaries")
@@ -158,7 +164,16 @@ class CongressApiClient:
 
     def fetch_bill_text_versions(self, congress: int, bill_type: str, number: str | int) -> list[dict[str, Any]]:
         payload = self._request_json(f"/bill/{congress}/{str(bill_type).lower()}/{number}/text")
-        return self._extract_items(payload, "textVersions")
+        versions = self._extract_items(payload, "textVersions")
+        key = (congress, str(bill_type).upper(), str(number))
+        actions = self._latest_actions.get(key, [])
+        if not versions and cited_record_locations(congress, key[1], actions):
+            record = self.fetch_cited_record_bill_text(congress, key[1], key[2], actions)
+            if record:
+                self._record_text[record['url']] = record['text']
+                return [{'date': actions[0]['statusDate'], 'type': 'Introduced (Congressional Record)',
+                         'formats': [{'type': 'Formatted Text', 'url': record['url']}]}]
+        return versions
 
     def fetch_bill_actions(self, congress: int, bill_type: str, number: str | int, limit: int = 100) -> list[dict[str, Any]]:
         payload = self._request_json(
@@ -222,6 +237,8 @@ class CongressApiClient:
     def fetch_text_content(self, url: str | None) -> str:
         if not url:
             return ""
+        if url in self._record_text:
+            return self._record_text[url]
         lowered = url.lower()
         if lowered.endswith(".pdf"):
             return ""
@@ -230,6 +247,25 @@ class CongressApiClient:
         if "pdf" in content_type:
             return ""
         return html_to_text(response.text)
+
+    def fetch_cited_record_bill_text(self, congress: int, kind: str, number: str, actions: list[dict]) -> dict | None:
+        for date, page, url in cited_record_locations(congress, kind, actions)[:2]:
+            with self.client.stream('GET', url) as response:
+                if str(response.url) != url or response.status_code in (404, 410):
+                    continue
+                response.raise_for_status()
+                chunks = []
+                size = 0
+                for chunk in response.iter_bytes():
+                    size += len(chunk)
+                    if size > 4_000_000:
+                        raise ValueError('Congressional Record exceeded the source download bound')
+                    chunks.append(chunk)
+                text = extract_record_bill_text(b''.join(chunks).decode('utf-8', errors='replace'),
+                                                kind=kind, number=number, date=date, page=page)
+                if text:
+                    return {'bill_num': congress_bill_identifier(kind, number), 'congress': congress, 'url': url, 'text': text}
+        return None
 
     def extract_law(self, detail: dict[str, Any]) -> dict[str, str]:
         laws = detail.get("laws")

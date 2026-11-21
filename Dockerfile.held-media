@@ -1,0 +1,3 @@
+# Reuse the live transcription worker and unchanged speech/evidence quality checks.
+FROM registry.skazproconsulting.com/keeping-law-simple/web:20261004-summaries1@sha256:6a3897a451983cd2e5303b713ef3271d355b83968b384cc70011daf4aba850e0
+COPY scripts/review_held_summaries.py scripts/recover_held_wyoming_media.py /app/scripts/
