@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 from bs4 import BeautifulSoup, Tag
@@ -14,10 +14,7 @@ from app.text_utils import clean_text
 
 
 ARKANSAS_BILL_NUMBER_PATTERN = re.compile(r"^(HB|HR|HMR|HCMR|SB|SR|SMR)\d+$", re.IGNORECASE)
-ARKANSAS_VIEW_LINK_PATTERN = re.compile(
-    r"/Bills/ViewBills\?type=([A-Z]+)&ddBienniumSession=([^&\"']+)",
-    re.IGNORECASE,
-)
+ARKANSAS_SESSION_PATTERN = re.compile(r"\d{4}/(?P<year>\d{4})(?:R|F|S(?P<special>[1-9]\d*))")
 ARKANSAS_PAGE_COUNT_PATTERN = re.compile(r"Page\s+(\d+)\s+of\s+(\d+)", re.IGNORECASE)
 
 
@@ -65,10 +62,11 @@ class ArkansasApiClient:
 
     def fetch_year_bills(self, year: int) -> list[dict[str, Any]]:
         type_links = self._type_links_for_year(year)
-        items_by_bill: dict[str, dict[str, Any]] = {}
+        items_by_bill: dict[tuple[int | None, str], dict[str, Any]] = {}
 
         for bill_type, session_value in type_links:
             start = 0
+            total_pages = None
             while True:
                 response = self.client.get(
                     "/Bills/ViewBills",
@@ -81,16 +79,25 @@ class ArkansasApiClient:
                 response.raise_for_status()
                 page_items = self._parse_view_page(response.text, str(response.url), session_value)
                 if not page_items:
-                    break
+                    raise ValueError(f"Arkansas bill list was empty for {session_value} {bill_type}")
                 for item in page_items:
-                    items_by_bill[item["billNum"]] = item
+                    key = (item["specialSessionValue"], item["billNum"])
+                    if key in items_by_bill:
+                        raise ValueError(f"Arkansas bill list repeated {session_value} {item['billNum']}")
+                    items_by_bill[key] = item
 
                 pager = ARKANSAS_PAGE_COUNT_PATTERN.search(response.text)
-                if pager is None or int(pager.group(1)) >= int(pager.group(2)):
+                if pager is None or int(pager.group(1)) != start // 20 + 1:
+                    raise ValueError(f"Arkansas pagination was invalid for {session_value} {bill_type}")
+                pages = int(pager.group(2))
+                if pages < int(pager.group(1)) or (total_pages is not None and total_pages != pages):
+                    raise ValueError(f"Arkansas pagination changed for {session_value} {bill_type}")
+                total_pages = pages
+                if int(pager.group(1)) == pages:
                     break
                 start += 20
 
-        return sorted(items_by_bill.values(), key=lambda item: _sort_bill_key(str(item["billNum"])))
+        return sorted(items_by_bill.values(), key=lambda item: (item["specialSessionValue"] or 0, _sort_bill_key(str(item["billNum"]))))
 
     def fetch_bill_detail(self, detail_path: str, item: dict[str, Any] | None = None) -> dict[str, Any]:
         response = self.client.get(detail_path)
@@ -186,14 +193,22 @@ class ArkansasApiClient:
         response = self.client.get("/Bills/SearchByRange")
         response.raise_for_status()
 
-        links: list[tuple[str, str]] = []
-        for bill_type, session_value in ARKANSAS_VIEW_LINK_PATTERN.findall(response.text):
-            decoded_session = unquote(session_value)
-            if str(year) not in decoded_session:
-                continue
-            candidate = (bill_type.upper(), decoded_session)
-            if candidate not in links:
-                links.append(candidate)
+        soup = BeautifulSoup(response.text, "html.parser")
+        links = self._view_links(soup, str(response.url), year)
+        sessions = {
+            str(option.get("value") or "")
+            for option in soup.select("select[name='ddBienniumSession'] option[value]")
+            if self._session_year(str(option.get("value") or "")) == year
+        }
+        # The official search page defaults to the newest session, not the requested year.
+        for session in sorted(sessions - {value for _, value in links}):
+            selected = self.client.get("/Bills/SearchByRange", params={"ddBienniumSession": session})
+            selected.raise_for_status()
+            selected_links = self._view_links(BeautifulSoup(selected.text, "html.parser"), str(selected.url), year)
+            matching = [link for link in selected_links if link[1] == session]
+            if not matching:
+                raise ValueError(f"Arkansas bill type links were not found for session {session}")
+            links.extend(link for link in matching if link not in links)
 
         if not links:
             raise ValueError(f"Arkansas bill type links were not found for {year}")
@@ -201,8 +216,32 @@ class ArkansasApiClient:
         self._type_links_by_year[year] = links
         return links
 
+    @staticmethod
+    def _session_year(value: str) -> int | None:
+        match = ARKANSAS_SESSION_PATTERN.fullmatch(value)
+        return int(match['year']) if match else None
+
+    @classmethod
+    def _view_links(cls, soup: BeautifulSoup, page_url: str, year: int) -> list[tuple[str, str]]:
+        links: list[tuple[str, str]] = []
+        for anchor in soup.select("a[href]"):
+            parsed = urlparse(absolute_url(page_url, anchor.get("href")) or "")
+            if parsed.netloc != urlparse(page_url).netloc or parsed.path.lower() != "/bills/viewbills":
+                continue
+            query = parse_qs(parsed.query)
+            types, sessions = query.get("type", []), query.get("ddBienniumSession", [])
+            if len(types) != 1 or len(sessions) != 1:
+                continue
+            candidate = (types[0].upper(), sessions[0])
+            if cls._session_year(sessions[0]) == year and normalize_arkansas_bill_number(types[0] + "1") and candidate not in links:
+                links.append(candidate)
+        return links
+
     def _parse_view_page(self, html_text: str, page_url: str, session_value: str) -> list[dict[str, Any]]:
         soup = BeautifulSoup(html_text, "html.parser")
+        session = ARKANSAS_SESSION_PATTERN.fullmatch(session_value)
+        if session is None:
+            raise ValueError(f"Arkansas session was invalid: {session_value}")
 
         items: list[dict[str, Any]] = []
         for row in soup.select(
@@ -215,6 +254,8 @@ class ArkansasApiClient:
             if bill_link is None:
                 continue
             parsed = urlparse(absolute_url(page_url, bill_link.get("href")) or "")
+            if parse_qs(parsed.query).get("ddBienniumSession") != [session_value]:
+                raise ValueError(f"Arkansas bill session did not match {session_value}")
             bill_num = normalize_arkansas_bill_number(parse_qs(parsed.query).get("id", [""])[0])
             if not bill_num:
                 bill_num = normalize_arkansas_bill_number(bill_link.get_text(" ", strip=True))
@@ -243,6 +284,7 @@ class ArkansasApiClient:
                     "lastAction": "",
                     "lastActionDate": "",
                     "sessionValue": session_value,
+                    "specialSessionValue": int(session['special']) if session['special'] else None,
                     "detailPath": detail_path,
                     "currentVersionPath": current_version_path,
                     "currentVersionFingerprint": current_version_path,

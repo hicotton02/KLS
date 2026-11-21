@@ -1,9 +1,88 @@
 from __future__ import annotations
 
 import httpx
+import pytest
+from bs4 import BeautifulSoup
 
 from app.arkansas_api import ArkansasApiClient
 from app.settings import get_settings
+
+
+def _session_page(session: str, *, page: int = 1, pages: int = 1) -> str:
+    return f'''<div id="tableDataWrapper"><div class="row tableRow">
+      <a href="/Bills/Detail?id=HB1001&amp;ddBienniumSession={session}">HB1001</a>
+      <div class="col-md-7">{session} bill</div>
+    </div></div><div>Page {page} of {pages}</div>'''
+
+
+def test_session_rollover_preserves_fiscal_and_special_bills() -> None:
+    api = ArkansasApiClient(get_settings())
+    api.close()
+    requested = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        session = request.url.params.get("ddBienniumSession")
+        if request.url.path == "/Bills/SearchByRange":
+            requested.append(session)
+            html = '''<select name="ddBienniumSession">
+              <option value="2027/2027R" selected>2027</option>
+              <option value="2025/2026F">2026 fiscal</option>
+              <option value="2025/2026S1">2026 special</option>
+            </select>'''
+            selected = session or "2027/2027R"
+            html += f'<a href="/Bills/ViewBills?ddBienniumSession={selected}&amp;type=HB">House</a>'
+            return httpx.Response(200, text=html)
+        assert request.url.path == "/Bills/ViewBills"
+        return httpx.Response(200, text=_session_page(session))
+
+    api.client = httpx.Client(base_url=api.settings.arkansas_site_base, transport=httpx.MockTransport(handler))
+    try:
+        items = api.fetch_year_bills(2026)
+        assert [(row["billNum"], row["specialSessionValue"]) for row in items] == [("HB1001", None), ("HB1001", 1)]
+        assert requested == [None, "2025/2026F", "2025/2026S1"]
+        api._type_links_for_year(2026)
+        assert len(requested) == 3
+        assert api._session_year("2025/2026F") == 2026
+        assert api._session_year("2025/2026S12") == 2026
+        assert api._session_year("2025/2026S0") is None
+    finally:
+        api.close()
+
+
+def test_ignored_session_selection_is_not_cached() -> None:
+    api = ArkansasApiClient(get_settings())
+    api.close()
+    html = '''<select name="ddBienniumSession"><option value="2025/2026F">2026</option></select>
+      <a href="/Bills/ViewBills?type=HB&amp;ddBienniumSession=2027/2027R">House</a>'''
+    api.client = httpx.Client(base_url=api.settings.arkansas_site_base,
+                            transport=httpx.MockTransport(lambda request: httpx.Response(200, text=html)))
+    try:
+        with pytest.raises(ValueError, match="session 2025/2026F"):
+            api.fetch_year_bills(2026)
+        assert 2026 not in api._type_links_by_year
+        assert api._view_links(BeautifulSoup(html, "html.parser"), api.settings.arkansas_site_base, 2025) == []
+    finally:
+        api.close()
+
+
+@pytest.mark.parametrize("body, message", [
+    (_session_page("2027/2027R"), "session did not match"),
+    (_session_page("2025/2026F", pages=2), "repeated"),
+    (_session_page("2025/2026F", page=2, pages=2), "pagination was invalid"),
+    ("<html>No bill list</html>", "bill list was empty"),
+])
+def test_wrong_or_incomplete_list_is_rejected(body: str, message: str) -> None:
+    api = ArkansasApiClient(get_settings())
+    api.close()
+    def handler(request: httpx.Request) -> httpx.Response:
+        html = '<a href="/Bills/ViewBills?type=HB&amp;ddBienniumSession=2025/2026F">House</a>'
+        return httpx.Response(200, text=html if request.url.path == "/Bills/SearchByRange" else body)
+    api.client = httpx.Client(base_url=api.settings.arkansas_site_base, transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(ValueError, match=message):
+            api.fetch_year_bills(2026)
+    finally:
+        api.close()
 
 
 def test_fetch_year_bills_reads_all_types_and_pages() -> None:
