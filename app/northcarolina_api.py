@@ -9,6 +9,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from app.http_documents import absolute_url, fetch_document_text
+from app.http_retry import get_with_retries
 from app.settings import Settings
 from app.text_utils import clean_text, first_non_empty
 
@@ -80,7 +81,7 @@ class NorthCarolinaApiClient:
         self.webservices_client.close()
 
     def fetch_year_bills(self, year: int) -> list[dict[str, Any]]:
-        response = self.webservices_client.get(f"/AllBills/{year}")
+        response = get_with_retries(self.webservices_client, f"/AllBills/{year}", max_attempts=3)
         response.raise_for_status()
 
         items: list[dict[str, Any]] = []

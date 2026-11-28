@@ -1,9 +1,60 @@
 from __future__ import annotations
 
-import httpx
+from functools import partial
 
+import httpx
+import pytest
+
+from app.http_retry import get_with_retries
 from app.northcarolina_api import NorthCarolinaApiClient
 from app.settings import get_settings
+
+
+@pytest.mark.parametrize("first_status,headers,delay", [(503, {}, 1.0), (429, {"Retry-After": "7"}, 7.0)])
+def test_bill_index_recovers_with_bounded_retries(monkeypatch, first_status, headers, delay) -> None:
+    sleeps = []
+    monkeypatch.setattr("app.northcarolina_api.get_with_retries", partial(get_with_retries, sleeper=sleeps.append))
+    api = NorthCarolinaApiClient(get_settings())
+    api.webservices_client.close()
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(first_status, headers=headers, request=request)
+        return httpx.Response(200, json=[{"chamber": "H", "billNumber": 1}], request=request)
+
+    api.webservices_client = httpx.Client(base_url=api.settings.north_carolina_webservices_base,
+                                        transport=httpx.MockTransport(handler))
+    try:
+        assert [row["billNum"] for row in api.fetch_year_bills(2025)] == ["H1"]
+    finally:
+        api.close()
+    assert len(requests) == 2
+    assert sleeps == [delay]
+
+
+@pytest.mark.parametrize("status,attempts,delays", [(503, 3, [1.0, 2.0]), (403, 1, []), (404, 1, [])])
+def test_bill_index_keeps_permanent_failures_visible(monkeypatch, status, attempts, delays) -> None:
+    sleeps = []
+    monkeypatch.setattr("app.northcarolina_api.get_with_retries", partial(get_with_retries, sleeper=sleeps.append))
+    api = NorthCarolinaApiClient(get_settings())
+    api.webservices_client.close()
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(status, request=request)
+
+    api.webservices_client = httpx.Client(base_url=api.settings.north_carolina_webservices_base,
+                                        transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            api.fetch_year_bills(2025)
+    finally:
+        api.close()
+    assert len(requests) == attempts
+    assert sleeps == delays
 
 
 def test_fetch_year_bills_reads_north_carolina_bill_list() -> None:

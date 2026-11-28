@@ -1,0 +1,3 @@
+# Preserve all other live adapters and federal source recovery.
+FROM registry.skazproconsulting.com/keeping-law-simple/web:20261121-record3-sync@sha256:cc6d6be57579acf8eeb15a6ab0def3850a5c2fbcfa4340c15b8d1b73036072c1
+COPY app/northcarolina_api.py /app/app/northcarolina_api.py
